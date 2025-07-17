@@ -1,0 +1,1942 @@
+---
+title: "Chapter 2: Effect of COPD in Control Samples"
+author: "Joanna Xie"
+date: "`r doc_date()`"
+bibliography: ../data/chap2_bib.bib
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: "hide"
+citation_package: natbib  
+csl: ../data/nature.csl  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  fig.width = 10,
+  warning = FALSE,
+  message = FALSE,
+  verbose = FALSE,
+  root.dir = "../html")
+```
+
+
+```{r Libraries, echo=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(Seurat)
+library(cowplot)
+library(patchwork)
+library(scDblFinder)
+library(speckle)
+library(EnhancedVolcano)
+library(readxl)
+library(ggbeeswarm)
+```
+
+
+```{r defineAesthetics, include=FALSE, warning = FALSE }
+
+source("../vignettes/themes_colors.R")
+
+#sample colours 
+#Wes Anderson
+sampleColors <- c(
+#Color 1: "Vintage Yellow"
+"1. HBEC D1 Control"  = "#f0a60c", #(Light)
+
+#Color 2: "Soft Salmon"
+"4. COPD D1 Control"  = "#FF85AB", #(Light)
+
+#Color 3: "Dusty Lavender"
+"7. COPD D2 Control"  = "#09717d") #(Light)
+
+#Cell Colours
+cellColors <- c(
+  "Ciliated" = "#e69317",        
+  "Club" = "#56c0f5",           
+  "Basal" = "#059971",          
+  "Basal Club Transitional" = "#f0e22b",        
+  "Ciliated (Stressed)" = "#0540b5", 
+  "Proliferating Basal" = "#8a491a", 
+  "Proliferating + Ciliated" = "#c2559c", 
+  "Ionocyte + Tuft" = "#7bd938",        
+  "Goblet" = "#535366"
+)
+```
+
+
+# Summary
+
+The following vignette explores:
+
+* Annotation of integrated control objects.
+* DE analysis for:
+    * Goblet and club cells.
+    * COPD vs healthy goblet cells.
+    * Epigenetic modifiers in COPD vs healthy cells (also specifically basal and goblet cells).
+    * Ciliated cells of unknown subtype with elevated mitochondrial content vs ciliated main cluster.
+  
+  
+Overall, the DE analysis reveals significant results for several markers identified in the literature as indicators of COPD, suggesting that the ALI culture system is capable of recapitulating genetic expression patterns characteristic of COPD in vitro. Care should be taken when considering sex differences in patients. It may also be interesting to explore whether different exacerbation levels of COPD can be detected in vitro using scRNA-seq data.
+
+However, comparing cell type proportions, especially quantitatively, can be challenging based on scRNA-seq data alone due to significant overlap in biomarker expression. This issue is not limited to club and goblet cells but also extends to other cell types, such as proliferating basal and ciliated cells. Stronger evidence for goblet cell hyperplasia, a hallmark of COPD, was found in the DE analysis, which included both goblet and club cells, compared to the barplots of cell type proportions alone.
+
+The investigation of epigenetic factors in COPD development is promising, with UTY and HDAC9 emerging as noteworthy candidates. 
+
+# Load Previous Seurat Object
+
+We load a copy of a pre-processed data object that has undergone the usual Seurat processing steps (QC, identifying variable features, finding anchors, running PCA and UMAP).
+
+
+```{r loadObject}
+
+#Load copy of pre-processed data object that has undergone the usual Seurat steps = QC, identifying variable features, finding anchors, running PCA and UMAP
+ctrl_UMAP <-  get(load(file = "../data/controllibsCombined_wihtUMAP.RData"))
+
+```
+
+# UMAP Clustering
+
+```{r clustering}
+ctrl_UMAP <-  FindNeighbors(ctrl_UMAP, reduction = "pca", dims = 1:25)
+ctrl_UMAP <-  FindClusters(ctrl_UMAP, resolution = 0.35)
+head(Idents(ctrl_UMAP), 5)
+```
+
+
+## Plotting UMAP Clusters
+
+```{r plotUMAP,fig.width=10, fig.height=8}
+DimPlot(ctrl_UMAP, reduction = "umap")
+```
+
+
+# Cluster Annotation
+
+
+## Find Positive Markers
+
+```{r findMarkers}
+DefaultAssay(ctrl_UMAP) <-  "RNA"
+
+if(file.exists("../data/control_markers_jx.RData")){
+  
+  load(file = "../data/control_markers_jx.RData")
+
+  }else{
+    
+    Controlmarkers <- FindAllMarkers(ctrl_UMAP, only.pos = T, min.pct = 0.3, logfc.threshold = 0.3)
+    
+    save(Controlmarkers, file = "../data/control_markers_jx.RData")
+
+}
+
+top10 <- Controlmarkers %>% group_by(cluster) %>% slice_max(n = 10, order_by = avg_log2FC)
+top10
+
+```
+
+```{r markerTable}
+DT::datatable(top10)
+```
+
+## Manual Annotation
+
+### Violin Plots for Known Biomarker Expression
+
+```{r vlnMarkers ,fig.width=10, fig.height=8}
+# Known cell-type markers
+list_of_cellmarkers <- list(
+  Basal = c("KRT5", "KRT14", "TP63", "DAPL1", "NGFR"),
+  proliferatingBasal = c("MKI67", "TOP2A", "CDK1"),
+  BC_Club = c("KRT4", "KRT13"),
+  Club = c("SCGB1A1", "KRT15", "LYPD2"),
+  Ciliated = c("FOXJ1", "CCDC153", "CCDC113", "MLF1", "LZTFL1"),
+  Neuroendocine = c("CHGA", "ASCL1", "SOX9", "ITGA2", "ITGB4"), 
+  Tuft = c("POU2F3", "AVIL", "GNAT3", "TRPM5"),
+  Ionocyte = c("FOXI1", "CFTR", "ASCL3"),
+  Goblet = c("MUC5AC", "MUC5B", "GP2", "SPDEF")
+)
+
+DefaultAssay(ctrl_UMAP) <- "RNA"
+
+# Loop through each cell type and generate violin plots
+for (cell_type in names(list_of_cellmarkers)) {
+  markers <- list_of_cellmarkers[[cell_type]]
+
+  # Generate violin plots
+  p <- VlnPlot(
+    object = ctrl_UMAP,
+    features = markers,
+    pt.size = 0
+  ) 
+  p <- p + plot_annotation(title = paste("Biomarker Violin Plots:", cell_type, sep = " "))  
+  # Display the plot
+  print(p)}
+```
+
+### Checking Gene Presence
+
+GP2/ZAP75 doesn't appear in the assay.
+
+```{r genePresence}
+gene_names <- rownames(GetAssayData(ctrl_UMAP, assay = "RNA", slot = "data"))
+grep("GP2", gene_names, value = TRUE)
+grep("ZAP75", gene_names, value = TRUE)
+
+```
+
+
+### Assigning Clusters
+
+
+Manual annotation of the clusters:
+
+* Cluster 0 → Ciliated
+* Cluster 1 → Ciliated
+* Cluster 2 → Club
+* Cluster 3 → Club
+* Cluster 4 → Basal
+* Cluster 5 → BC Club
+* Cluster 6 → Ciliated (Unknown Subtype)
+* Cluster 7 → Ciliated
+* Cluster 8 → Proliferating Basal + Ciliated
+* Cluster 9 → Proliferating Basal
+* Cluster 10 → Ionocyte
+* Cluster 11 → Goblet
+* Cluster 12 → Ciliated
+
+The ciliated (unknown subtype) cluster may also represent a population of dying/stressed cells that persisted after QC filtering, based on high mitochondrial %. It is explored further later on.
+
+
+```{r identAssign}
+ctrl_annotated<- RenameIdents(ctrl_UMAP, 
+                              "0" = "Ciliated", 
+                              "1" = "Ciliated", 
+                              "2" = "Club",
+                              "3" = "Club",
+                              "4" = "Basal", 
+                              "5" = "Basal-Club Transitional", 
+                              "6" = "Ciliated (Stressed)" , 
+                              "7" = "Ciliated", 
+                              "8" = "Proliferating + Ciliated",
+                              "9" = "Proliferating Basal",  
+                              "10" = "Ionocyte + Tuft", 
+                              "11" = "Goblet",
+                              "12" = "Ciliated")
+
+annotate_cellTypes_ch2 <- function(obj){
+obj<- RenameIdents(obj, 
+                              "0" = "Ciliated", 
+                              "1" = "Ciliated", 
+                              "2" = "Club",
+                              "3" = "Club",
+                              "4" = "Basal", 
+                              "5" = "Basal Club Transitional", 
+                              "6" = "Ciliated (Stressed)" , 
+                              "7" = "Ciliated", 
+                              "8" = "Proliferating + Ciliated",
+                              "9" = "Proliferating Basal",  
+                              "10" = "Ionocyte + Tuft", 
+                              "11" = "Goblet",
+                              "12" = "Ciliated")
+return(obj)}
+
+```
+
+
+## Annotated UMAP Plots
+
+```{r annoUMAP,fig.width=10, fig.height=8}
+
+DefaultAssay(ctrl_annotated) <- "integrated"
+short_names <- c(
+  "Ciliated" = "1. Ciliated", 
+  "Club" = "2. Club",
+  "Basal" = "3. Basal",
+  "Basal-Club Transitional" = "4. Basal-Club Transitional", 
+  "Ciliated (Stressed)" = "5. Ciliated (Stressed)",
+  "Proliferating Basal" = "6. Proliferating Basal",
+  "Proliferating + Ciliated" = "7. Proliferating + Ciliated",
+  "Ionocyte + Tuft" = "8. Ionocyte + Tuft",
+  "Goblet" = "9. Goblet"
+)
+# Create NEW color vector with short names
+new_cellColors <- cellColors
+names(new_cellColors) <- short_names[names(cellColors)]
+
+# Verify
+print(new_cellColors)
+
+# Permanently rename clusters
+ctrl_annotated_temp <- RenameIdents(ctrl_annotated, short_names)
+annoplot <-  DimPlot(ctrl_annotated_temp, cols = new_cellColors) 
+annoplot
+```
+```{r}
+ggsave(
+  "../fig/ctrl_holly.pdf",
+  plot = annoplot,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 22,
+  height = 16,
+  units = "cm",
+  dpi = 600,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+
+### Split by Sample
+
+```{r splitByUMAP,fig.width=23, fig.height=10}
+p1 <- DimPlot(ctrl_annotated, reduction = "umap", split.by = "sampleType", pt.size = 0.5, cols = cellColors) + ggtitle("UMAP split by sample")
+p1
+
+
+ggsave(
+  "../fig/ctrl_int_splitby_anno.pdf",
+  plot = p1,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 25,
+  height = 10,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+
+```
+
+
+### Group by Sample
+
+```{r groupByUMAP, fig.width = 10, fig.height = 8}
+p1 <- DimPlot(ctrl_annotated, reduction = "umap", group.by = "sampleType",cols = sampleColors ) + ggtitle("UMAP coloured by sample") 
+p1
+```
+
+
+# Additional Plots
+
+## Violin Plots of Annotated Clusters
+
+Cluster annotation is not entirely clear-cut based on these known biomarkers, as other relevant markers were not included in this analysis. For instance, the "basal" and "proliferating basal" clusters exhibit higher KRT15 expression than club and BC club cells.
+
+The cluster annotated as "ionocyte" shows high expression of tuft cell markers. However, the distinction between these cell types remains unclear. (See Chapter 3 for the integration of all nine libraries, where tuft cells are annotated separately from ionocytes, and an intermediate progenitor cell type is discussed.) Additionally, neuroendocrine markers are expressed within the same cluster, indicating a similar issue with very low abundance to an even greater extent.
+
+Overall, while annotation is feasible, ambiguity in cell type classification may hinder confident comparisons of cell type proportions between samples.
+
+
+```{r vlnAnnotated,fig.width=10, fig.height=12}
+DefaultAssay(ctrl_annotated) <- "RNA"
+
+for (cell_type in names(list_of_cellmarkers)) {
+  markers <- list_of_cellmarkers[[cell_type]]
+
+  p <- VlnPlot(
+    object = ctrl_annotated,
+    features = markers,
+    pt.size = 0,
+    ncol =2,
+    cols = cellColors
+  ) 
+  p <- p + plot_annotation(title = paste("Biomarker Violin Plots (Annotated):", cell_type, sep = " "))  
+  print(p)}
+```
+
+
+## Cell-type Proportions Barplots
+
+* The following cell-type proportions plot suggest that COPD patients have relatively higher number of goblet cells, which recapitulates the disease in vivo [@shaykhievEmergingBiologyPersistent2019]. However, it should be considered that the cluster annotated as club cells also have significant goblet characteristics, and the club population decreases in the COPD samples. Overall, ambiguity in annotation results in the cell proportion barplots being difficult to interpret.
+* There is marked increase in ciliated cells, which contradicts some literature that suggests that a loss of ciliated epithelial cells is typical in COPD [@rabyMechanismsAirwayEpithelial2023].
+
+### All Cell Types
+
+```{r propsAll}
+DefaultAssay(ctrl_annotated) <- "RNA"
+
+ctrl_annotated2 <-ctrl_annotated
+ctrl_annotated2$sampleType <- recode(ctrl_annotated2$sampleType,"1. HBEC D1 Control" = "HBEC 1 (Control)", "2. HBEC D1 3uM" = "HBEC 1 (3 μM)","3. HBEC D1 10uM" = "HBEC 1 (10 μM)", "4. COPD D1 Control" = "COPD 1 (Control)", "5. COPD D1 3uM" = "COPD 1 (3 μM)", "6. COPD D1 10uM" = "COPD 1 (10 μM)", "7. COPD D2 Control" = "COPD 2 (Control)", "8. COPD D2 3uM" = "COPD 2 (3 uM)", "9. COPD D2 10uM" = "COPD 2(10 uM)")
+
+Idents(ctrl_annotated2 ) <- factor(Idents(ctrl_annotated2),
+                                 levels = c("Ionocyte",
+                                             "Basal-Club Transitional", 
+                                             "Ciliated",
+                                             "Goblet",
+                                             "Club",
+                                             "Proliferating Basal",
+                                             "Proliferating + Ciliated",
+                                             "Basal",
+                                             "Ciliated (Stressed)", "Ionocyte + Tuft"))
+
+
+props1 <- plotCellTypeProps(ctrl_annotated2 ,clusters = Idents(ctrl_annotated2 ), sample =  ctrl_annotated2 $sampleType) + scale_fill_manual("Legend", values = cellColors) + theme(legend.position="none")+ theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+props1
+```
+```{r}
+ggsave(
+  "../fig/ctrl_props.pdf",
+  plot = props1,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 12,
+  height = 13,
+  units = "cm",
+  dpi = 600,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+```{r}
+propsTable_sample <- getTransformedProps(clusters = Idents(ctrl_annotated2), sample = ctrl_annotated2$sampleType)
+props_sample <-  propsTable_sample$Proportions
+```
+
+```{r}
+library(dplyr)
+
+# Assuming you have two FindMarkers results: markers1 and markers2
+# Example data preparation if needed:
+# markers1 <- FindMarkers(seurat_obj, ident.1 = "cluster1", ...)
+# markers2 <- FindMarkers(seurat_obj, ident.1 = "cluster2", ...)
+
+get_top_markers <- function(markers, n = 30, direction = "positive") {
+  markers %>%
+    tibble::rownames_to_column("gene") %>%
+    filter(p_val_adj < 0.05) %>%
+    arrange(if(direction == "positive") -avg_log2FC else avg_log2FC) %>% # Fixed
+    slice_head(n = n) %>%
+    pull(gene)
+}
+
+# Get top markers
+top_pos1 <- get_top_markers(ctrl_vs_COPD_goblet, direction = "positive")
+top_neg1 <- get_top_markers(ctrl_vs_COPD_goblet, direction = "negative")
+top_pos2 <- get_top_markers(markers_huang, direction = "positive")
+top_neg2 <- get_top_markers(markers_huang, direction = "negative")
+
+# Calculate overlaps
+overlap_analysis <- list(
+  positive = list(
+    overlap_genes = intersect(top_pos1, top_pos2),
+    count = length(intersect(top_pos1, top_pos2)),
+    proportion = length(intersect(top_pos1, top_pos2))/30
+  ),
+  negative = list(
+    overlap_genes = intersect(top_neg1, top_neg2),
+    count = length(intersect(top_neg1, top_neg2)),
+    proportion = length(intersect(top_neg1, top_neg2))/30
+  )
+)
+
+# Print results
+cat("Positive markers overlap:\n")
+cat("- Genes:", paste(overlap_analysis$positive$overlap_genes, collapse = ", "), "\n")
+cat("- Count:", overlap_analysis$positive$count, "/30\n")
+cat("- Proportion:", overlap_analysis$positive$proportion, "\n\n")
+
+cat("Negative markers overlap:\n")
+cat("- Genes:", paste(overlap_analysis$negative$overlap_genes, collapse = ", "), "\n")
+cat("- Count:", overlap_analysis$negative$count, "/30\n")
+cat("- Proportion:", overlap_analysis$negative$proportion, "\n")
+```
+```{r}
+genes_of_interest <- c("MUC5AC", "MUC5B", "SPDEF", "FOXA3", "TFF3",
+                       "AGR2", "SAA1", "SAA2", "LTF", "HLA-DRB5",
+                       "SERPINB3", "CXCL6", "BPIFB1", "HDAC9")
+
+subset_markers <- ctrl_vs_COPD_goblet[rownames(ctrl_vs_COPD_goblet) %in% genes_of_interest, ]
+
+# Ensure correct order
+subset_markers <- subset_markers[match(genes_of_interest, rownames(subset_markers)), ]
+
+# Select and rename columns for display
+table_d <- subset_markers %>%
+  dplyr::select(log2FC = avg_log2FC, adj_p = p_val_adj) %>%
+  tibble::rownames_to_column("Gene")
+
+# Optionally round for publication
+table_d$log2FC <- round(table_d$log2FC, 2)
+table_d$adj_p <- signif(table_d$adj_p, 2)
+
+# If you have % expression in Goblet and Club cells:
+# Add `pct.1` and `pct.2` columns if you used group comparison
+# For example:
+table_d$`Goblet %` <- round(subset_markers$pct.1 * 100, 1)
+table_d$`Club %` <- round(subset_markers$pct.2 * 100, 1)
+
+# Reorder columns
+table_d <- table_d[, c("Gene", "Goblet %", "Club %", "log2FC", "adj_p")]
+
+# View
+print(table_d)
+```
+
+
+
+### Club and Goblet Cells Only
+
+
+```{r propsClubGoblet}
+
+
+cell_types <- c("Club", "Goblet")
+filtered_cells <- which(Idents(ctrl_annotated2) %in% cell_types)
+
+filtered_clusters <- Idents(ctrl_annotated2)[filtered_cells]
+filtered_sample <- ctrl_annotated2$sampleType[filtered_cells]
+
+plotCellTypeProps(ctrl_annotated2, clusters = filtered_clusters, sample = filtered_sample) +
+  scale_fill_manual("Legend", values = cellColors[c("Club", "Goblet")]) + ggtitle("Goblet and Club Cell Relative Proportions")
+
+
+
+```
+
+
+### Goblet Cells Only
+
+
+
+```{r propsGoblet,fig.width=16, fig.height=7}
+
+transformed_props <- getTransformedProps(clusters = Idents(ctrl_annotated2), sample = ctrl_annotated2$sampleType)
+props = transformed_props$Proportions
+
+prop_goblet <- as.data.frame(props) %>% filter(clusters == "Goblet")
+
+p <-  ggplot(prop_goblet, aes(x = sample, y = Freq, fill = sample)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(signif(Freq, 2))), hjust = -0.2, size = 3.5, color = "black") +
+  labs(title = "Goblet cell proportions in control samples",
+       x = "Sample",
+       y = "Proportion of goblet cells") +
+  theme_minimal() + coord_flip()  +
+  scale_fill_manual("Sample", values = sampleColors)
+
+p
+
+
+ggsave("../fig/goblet_props.pdf", plot = p, width = 6, height = 4)
+```
+
+
+## Mitochondrial Genes Feature Plot
+
+High mitochondrial content in the unknown cluster suggests a population of dying/stressed cells. There is also relatively high mt % in goblet cells.
+
+```{r mtFeature,fig.width=10, fig.height=8}
+
+mt_fp <- FeaturePlot(ctrl_annotated, features = "percent.mt",min.cutoff = "q9") + plot_annotation("Mitchondrial Feature Plot for Control Samples")
+mt_fp
+```
+
+
+```{r mtFeatureSplit,fig.width=20, fig.height=8}
+
+mt_fp2 <- FeaturePlot(ctrl_annotated, features = "percent.mt",min.cutoff = "q9", split.by = "sampleType") + plot_annotation("Mitchondrial Feature Plots Split by Control Samples") + theme(legend.position = "right")
+mt_fp2
+
+```
+
+# Goblet and Club Comparison
+
+Example of DE analysis between cell types, in this case club vs goblet. Positive log2FC values indicate higher expression in club cells.
+
+```{r gobletClubDE}
+
+DefaultAssay(ctrl_annotated) <- "RNA"
+
+ctrl_annotated <- annotate_cellTypes_ch2(ctrl_UMAP)
+
+club_vs_goblet <- FindMarkers(ctrl_annotated,
+                                     ident.1 = "Club", 
+                                     ident.2 = "Goblet", 
+                                     min.pct = 0.2,logfc.threshold = -Inf)
+
+saveRDS(club_vs_goblet, "../data/club_vs_goblet.Rds")
+
+#view the top 8 most highly differentially expressed genes
+top8_pos <- club_vs_goblet %>% slice_max(n = 8, order_by = avg_log2FC)
+top8_neg <- club_vs_goblet %>% slice_min(n = 8, order_by = avg_log2FC)
+
+
+top8_neg
+top8_pos
+```
+
+## Data Table
+
+Many genes encoding ribosomal proteins are highly differentially expressed, which may be problematic.
+
+
+```{r celltypeDT}
+DT::datatable(club_vs_goblet)
+```
+
+## Volcano Plot
+
+
+```{r volcanoCT, fig.height = 9, fig.width = 10}
+volcanoplot <- EnhancedVolcano(club_vs_goblet, 
+                rownames(club_vs_goblet), 
+    FCcutoff = 1,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.001, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "DE analysis of goblet vs club cells in control samples", 
+       subtitle = "Positive Log2 fold change indicates higher expression in club cells")  + 
+  annotate("text", x = -0.45, y = 12, label = "Threshold p = 0.001", size = 4, hjust = 0) +
+  annotate("text", x = -1.95, y = 300, label = "Threshold log2FC = -1", size = 4, hjust = 0) +
+  annotate("text", x = 1.95, y = 300, label = "Threshold log2FC = 1", size = 4, hjust = 1)
+volcanoplot
+
+```
+
+
+## Feature Plots
+
+Markers of COPD in goblet cells (collected by Dr. Wenrui Guo): 
+
+* TFF3 (Trefoil Factor 3): TFF3 is overexpressed in COPD, especially during goblet cell metaplasia and chronic inflammation.
+* CLCA1 (Calcium-Activated Chloride Channel Regulator 1): CLCA1 is significantly upregulated in COPD patients as part of the mucus hypersecretion response, with little to no expression in healthy controls.
+* FOXA3 (Forkhead Box A3): FOXA3 is highly expressed in COPD during goblet cell metaplasia but minimally expressed in healthy epithelium.
+* SPDEF (SAM Pointed Domain Containing ETS Transcription Factor): Overexpressed in COPD due to increased goblet cell metaplasia and mucus overproduction.
+* Agr2 (Anterior Gradient 2): Elevated in COPD goblet cells due to enhanced mucin synthesis demands.
+
+### SPDEF
+
+
+
+SPDEF upregulates goblet cell hyperplasia [@parkSPDEFRegulatesGoblet2007], and regulates a network of genes involved in mucus production and goblet cell differentiation, alongside AGR2 and FOXA3 [@chenSPDEFRequiredMouse2009]. High expression in cells annotated as club/basal suggests that these cell populations may have also been undergoing differentiation into goblet cells. 
+
+
+```{r featureSPDEF, fig.width = 18, fig.height = 8}
+SPDEF_fp <- FeaturePlot(ctrl_annotated, features = "SPDEF", split.by = "sampleType") + plot_annotation("SPDEF Feature Plots for Control Samples") + theme(legend.position = "right")
+SPDEF_fp
+
+
+```
+
+### FOXA3
+
+```{r featureFOXA3, fig.width = 18, fig.height = 8}
+FOXA3_fp <- FeaturePlot(ctrl_annotated, features = "FOXA3", split.by = "sampleType") + plot_annotation("FOXA3 Feature Plots for Control Samples") + theme(legend.position = "right")
+FOXA3_fp
+```
+
+### AGR2
+
+```{r featureAGR2, fig.width = 18, fig.height = 8}
+AGR2_fp <- FeaturePlot(ctrl_annotated, features = "AGR2", split.by = "sampleType") + plot_annotation("AGR2 Feature Plots for Control Samples") + theme(legend.position = "right")
+AGR2_fp
+```
+
+### MUC5AC
+
+```{r featureMUC5AC, fig.width = 18, fig.height = 8}
+MUC5AC_fp <- FeaturePlot(ctrl_annotated, features = "MUC5AC", split.by = "sampleType") + plot_annotation("MUC5AC Feature Plots for Control Samples") + theme(legend.position = "right")
+MUC5AC_fp
+```
+
+
+### MUC5B
+
+```{r featureMUC5B, fig.width = 18, fig.height = 8}
+MUC5B_fp <- FeaturePlot(ctrl_annotated, features = "MUC5B", split.by = "sampleType") + plot_annotation("MUC5B Feature Plots for Control Samples") + theme(legend.position = "right")
+MUC5B_fp
+```
+
+
+### TFF3
+
+```{r featureTFF3, fig.width = 18, fig.height = 8}
+FeaturePlot(ctrl_annotated, features = "TFF3", split.by = "sampleType") + plot_annotation("TFF3 Feature Plots for Control Samples") + theme(legend.position = "right")
+```
+
+### CLCA1
+
+Expression is rarely found in all samples.
+
+```{r, fig.width = 18, fig.height = 8}
+FeaturePlot(ctrl_annotated, features = "CLCA1", split.by = "sampleType") + plot_annotation("CLCA1 Feature Plots for Control Samples") + theme(legend.position = "right")
+```
+
+
+# COPD in Goblet and Club Cells
+
+
+Given the high expression of genes associated with goblet cell hyperplasia in cells also expressing club cell markers (which were annotated as club cells), we proceeded with our analysis by subsetting cells annotated as either goblet or club. This approach is justified by the cell state continuum between these cell types and the increased statistical power it provides, which would otherwise be limited due to the small proportion of cells explicitly annotated as "goblet."
+
+
+```{r,fig.width=7, fig.height=7}
+ctrl_annotated_gobclub <- subset(ctrl_annotated, idents = c("Club", "Goblet"))
+
+DimPlot(ctrl_annotated_gobclub, cols = cellColors[c("Club", "Goblet")]) + ggtitle("The subset of goblet and glub cells \n used for downstream DE Analysis")
+
+```
+
+
+
+## DE Analysis
+
+```{r}
+Idents(ctrl_annotated_gobclub) <-  "sampleType"
+ctrl_vs_COPD_goblet <- FindMarkers(ctrl_annotated_gobclub, 
+                           ident.2 = "1. HBEC D1 Control", 
+                            ident.1 = c("4. COPD D1 Control", "7. COPD D2 Control"), logfc.threshold=-Inf, min.pct = 0)
+saveRDS(ctrl_vs_COPD_goblet, "../data/ctrl_vs_COPD_goblet.Rds")
+```
+
+
+## Data Table
+
+```{r}
+DT::datatable(ctrl_vs_COPD_goblet)
+```
+
+## Volcano Plots
+
+### Known Markers
+
+For known markers of COPD in goblet and club cells, FOXA3, AGR2, and SPDEF are more highly expressed in COPD samples, as expected. However, their log-fold changes are relatively small. In contrast, MUC5AC, MUC5B, and TFF3 exhibit larger log-fold changes, supporting the mucus hypersecretion phenotype characteristic of COPD.
+
+* MUC5B has been shown to regulate goblet cell differentiation in murine models [@huangMUC5BRegulatesGoblet2022].
+* According to Radicioni et al. [@radicioniAirwayMucinMUC5AC2021], "greater relative changes in MUC5AC concentrations were observed as a function of COPD severity."
+
+
+```{r volcanoKnownMarkers, fig.height = 10, fig.width = 10}
+
+marker_goblet_COPD = c("SPDEF", "CLCA1", "FOXA3", "AGR2", "TFF3", "MUC5AC", "MUC5B")
+
+
+volcanoplot <- EnhancedVolcano(ctrl_vs_COPD_goblet, 
+                rownames(ctrl_vs_COPD_goblet), 
+    selectLab = marker_goblet_COPD ,  
+    FCcutoff = 0.8,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "DE analysis of COPD vs healthy goblet and club cells in control samples", 
+       subtitle = "Positive Log2 fold change indicates higher expression in COPD patients") + xlim(-2, 2) + 
+  annotate("text", x = 1.5, y = 5, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -1.3, y = 200, label = "Threshold log2FC = -0.8", size = 4, hjust = 0) +
+  annotate("text", x = 1.3, y = 200, label = "Threshold log2FC = 0.8", size = 4, hjust = 1)
+volcanoplot
+
+ggsave(
+  "../fig/volcano_ctrl_goblet_markers.pdf",
+  plot = volcanoplot,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 15,
+  height = 10,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+### Significant Results
+
+By labelling genes with high log-fold change and significant p-values, we identified several with known associations to COPD, inflammation, and/or tumour development:
+
+* SAA1 and SAA2 (Serum Amyloid A proteins) are positive markers of COPD. These acute-phase response proteins are elevated in plasma during inflammation and have been proposed to link inflammation with tumour progression [@hansenLinkInflammationMetastasis2015] [@vietriSerumAmyloidPotential2020]. SAA is also a biomarker of acute exacerbations of COPD [@bozinovskiSerumAmyloidBiomarker2008].
+* LTF (Lactoferrin), found in secretory fluids, exhibits antibacterial activity and is associated with inflammatory injury [@kruzelLactoferrinContextInflammationInduced2017].
+* In our results, BPIFA1 is a negative marker of COPD. Typically highly expressed in respiratory mucosal epithelia, BPIFA1 is often reported as upregulated in COPD due to its role in the inflammatory response and its association with higher COPD severity [@desmetAssociationInnateDefense2018]. However, BPIFA1 has also been linked to an anti-inflammatory phenotype during mucociliary differentiation in ALI cultures [@cliftonBPIFA1SecretedBiomarker2022], and BPIFA1 knockout mice exhibit decreased mucociliary clearance [@tsouRoleBPIFA1Upper2018].
+* The related BPIFB1 is upregulated in COPD samples, consistent with expectations. BPIFB1 is a secreted protein in airway mucosa associated with COPD [@desmetAssociationInnateDefense2018, @liMolecularBiologyBPIFB12020].
+* SPINK5, encoding an anti-serine protease, is associated with asthma [@birbenRoleSPINK5Asthma2012]. Research suggests that a protease/antiprotease imbalance contributes to emphysema development in COPD [@uemasuSerineProteaseImbalance2020].
+* XPB1 is upregulated in COPD and may play a protective role against oxidative stress [@liuPreventingOxidativeStress2009].
+
+
+```{r volcanoSignificant, fig.height = 10, fig.width = 10}
+# Positive markers (up in COPD vs control, assuming group order)
+positive_markers <- ctrl_vs_COPD_goblet[
+  ctrl_vs_COPD_goblet$avg_log2FC >= 0.8 & 
+  ctrl_vs_COPD_goblet$p_val_adj <= 0.05,
+]
+
+# Negative markers (down in COPD vs control)
+negative_markers <- ctrl_vs_COPD_goblet[
+  ctrl_vs_COPD_goblet$avg_log2FC <= -0.8 & 
+  ctrl_vs_COPD_goblet$p_val_adj <= 0.05,
+]
+
+# Extract gene names
+positive_gene_names <- rownames(positive_markers)
+negative_gene_names <- rownames(negative_markers)
+
+# View
+print("Positive markers:")
+print(positive_gene_names)
+
+print("Negative markers:")
+print(negative_gene_names)
+
+volcanoplot <- EnhancedVolcano(ctrl_vs_COPD_goblet, 
+                rownames(ctrl_vs_COPD_goblet), selectLab = c(positive_gene_names,negative_gene_names,c("AGR2", "FOXA3", "SPDEF")),
+    FCcutoff = 0.8,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "", 
+       subtitle = "") + xlim(-2, 2) + 
+  annotate("text", x = 1.65, y = 13, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -2, y = 250, label = "Threshold log2FC = -0.8", size = 4, hjust = 0) +
+  annotate("text", x = 1.6, y = 250, label = "Threshold log2FC = 0.8", size = 4, hjust = 1)
+
+volcanoplot
+ggsave(
+  "../fig/volcano_ctrl_goblet_significant.pdf",
+  plot = volcanoplot,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 15,
+  height = 8,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+```{r}
+# Assuming you've already run:
+# ctrl_vs_COPD_goblet <- FindMarkers(object = your_seurat_obj, 
+#                                   ident.1 = "COPD_goblet", 
+#                                   ident.2 = "ctrl_goblet")
+
+# First, get the total number of tested genes (markers)
+total_tested <- nrow(ctrl_vs_COPD_goblet)
+
+# Count positive markers (upregulated in COPD_goblet)
+positive_markers <- sum(ctrl_vs_COPD_goblet$p_val_adj < 0.05 & 
+                        ctrl_vs_COPD_goblet$avg_log2FC > 0.8, na.rm = TRUE)
+
+# Count negative markers (downregulated in COPD_goblet)
+negative_markers <- sum(ctrl_vs_COPD_goblet$p_val_adj < 0.05 & 
+                       ctrl_vs_COPD_goblet$avg_log2FC < -0.8, na.rm = TRUE)
+
+# Calculate percentages
+positive_percent <- (positive_markers / total_tested) * 100
+negative_percent <- (negative_markers / total_tested) * 100
+
+# Print detailed results
+cat("Differential Expression Analysis: ctrl vs COPD_goblet\n")
+cat("==================================================\n")
+cat("Total number of tested markers:", total_tested, "\n")
+cat("Positive markers (logFC > 0.8):", positive_markers, 
+    sprintf("(%.2f%%)", positive_percent), "\n")
+cat("Negative markers (logFC < -0.8):", negative_markers, 
+    sprintf("(%.2f%%)", negative_percent), "\n")
+cat("Significant markers total (p_adj < 0.05 & |logFC| > 0.8):", 
+    positive_markers + negative_markers, "\n")
+```
+
+
+## Dot Plots
+
+### Known Markers of Interest
+
+```{r dotplotKnownMarkers}
+genes_of_interest <- c(c("SPDEF", "AGR2", "TFF3", "CLCA1", "FOXA3"),  c("MUC5AC", "MUC5B"))
+
+DotPlot(object = ctrl_annotated_gobclub, features = genes_of_interest) + ggtitle("Dot plot of COPD markers for control sample goblet and club cells") + coord_flip()
+
+```
+
+### COPD Positive Markers
+
+The dot plots suggests that sample no. 7 dominates the results, with generally higher expression for most positive markers for COPD than sample no. 4 (including SAA1, SAA2, MUC5B and BPIFB1, but excluding TFF3 and MUC5AC). It may be worth investigating if the donor patient had more severe COPD exacerbations.
+
+```{r dotplotposDEmarkers, fig.height = 20}
+
+copd_positive_markers_gob <- rownames(ctrl_vs_COPD_goblet %>%
+  filter(avg_log2FC >= 0.8, p_val_adj < 0.05))
+
+
+DotPlot(object = ctrl_annotated_gobclub, features = copd_positive_markers_gob) + ggtitle("Dot plot of positive markers of COPD in control goblet and club cells") + coord_flip() + plot_annotation("Average log2FC ≥ 1, adjusted p-value < 0.05")
+
+```
+
+
+### COPD Negative Markers
+
+BPIFA1 is absent from sample no. 5.
+
+```{r}
+copd_negative_markers_gob <- rownames(ctrl_vs_COPD_goblet %>%
+  filter(avg_log2FC <= -1, p_val_adj < 0.05))
+
+DotPlot(object = ctrl_annotated_gobclub, features = copd_negative_markers_gob) + ggtitle("Dot plot of negative markers of COPD in control goblet and club cells") + coord_flip() + plot_annotation("Average log2FC ≤ -1, adjusted p-value < 0.05")
+
+```
+
+## Feature Plots
+
+Some split by sample feature plots for more markers (not exhaustive).
+
+```{r, fig.height = 19, fig.width = 16}
+FeaturePlot(ctrl_annotated, features = c("SAA1", "SAA2", "SPINK5", "XPB1", "BPIFB1"), split.by = "sampleType") + plot_annotation("SAA1 Feature Plots for Control Samples") + theme(legend.position = "right")
+```
+
+
+## Violin Plots of Marker Genes
+
+
+### Across Samples
+
+We observe markedly high expression of TFF3 in ionocytes compared to all other cell types, even though TFF3 is typically associated with goblet cells [@yangPathologicalTherapeuticRoles2022]. This finding, coupled with previous results (e.g., violin plots of known cell type biomarkers) showing high expression of CFTR in goblet cells, suggests the possibility of a transitional cell state between goblet cells and ionocytes. CFTR, a defining marker of pulmonary ionocytes, encodes an important chloride channel that is mutated in cystic fibrosis [@plasschaertSinglecellAtlasAirway2018]. However, the annotated ionocytes show little expression of MUC5AC or MUC5B, despite the fact that TFF3 is typically co-localized with mucins in goblet cells [@wiedeLocalizationTFF3New1999].
+
+
+```{r vlnAcrossSamples, fig.width = 18, fig.height = 18}
+ctrl_annotated <- annotate_cellTypes_ch2(ctrl_UMAP)
+
+ctrl_annotated$cellType <- Idents(ctrl_annotated)
+
+Idents(ctrl_annotated) <- "cellType"
+
+genes_of_interest <- c(marker_goblet_COPD, list_of_cellmarkers[["Goblet"]])
+DefaultAssay(ctrl_annotated) <- "RNA"
+
+p3 <- VlnPlot(object = ctrl_annotated, features = genes_of_interest, pt.size = 0, cols = cellColors) + plot_annotation("Violin plots of goblet COPD markers across all cell types in control samples")
+p3
+ggsave(
+  "../fig/vln_goblet_ctrl.pdf",
+  plot = p3,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 25,
+  height = 10,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+
+```
+
+
+### Split by Sample
+
+* MUC5B is more highly expressed in sample no. 7.
+* Notably, XIST is exclusively expressed in sample no. 7. XIST is a non-coding RNA from the X-chromosome that plays a key role in X-inactivation. This suggests that the patient is female (XX), while the other two samples are male (XY). Sex differences may account for this significant result in the DE analysis, rather than COPD. However, there may be associations between the X-chromosome and COPD [@haydenChromosomeAssociationsChronic2023], and XIST has been reported to be elevated in female COPD patients [@chenXISTPromotesApoptosis2021].
+
+
+#### Across cell types
+
+
+```{r, fig.height = 12, fig.width = 18}
+
+DefaultAssay(ctrl_annotated) <- "RNA"
+
+p4 <-  VlnPlot(object = ctrl_annotated, features = genes_of_interest, pt.size = 0, split.by = "sampleType", cols = sampleColors) + plot_annotation("Violin plots of goblet COPD markers across all cell types split by control sample")
+p4 <- p4 + 
+  theme(legend.position = "bottom")
+
+p4
+
+ggsave(
+  "../fig/vln_goblet_ctrl_splitbysample.pdf",
+  plot = p4,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 25,
+  height = 10,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+
+```
+
+#### Goblet and Club Cells only
+
+
+```{r, fig.height = 12, fig.width = 18}
+ctrl_annotated_gobclub <- subset(ctrl_annotated, idents = c("Club", "Goblet"))
+p4 <-  VlnPlot(object = ctrl_annotated_gobclub, features = genes_of_interest, pt.size = 0.07, split.by = "sampleType", cols = sampleColors) 
+# Use color for outlines instead of fill
+p4 <- p4 + 
+  theme(legend.position = "bottom") +
+  scale_fill_manual("Sample", values = sampleColors) + plot_annotation("Violin plots of goblet COPD markers in only goblet and club cells split by control sample")
+
+p4
+
+ggsave(
+  "../fig/vln_goblet_ctrl_splitbysample_goblet.pdf",
+  plot = p4,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 25,
+  height = 10,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+## Box Plots of Marker Genes
+
+Box plots to summarise the same information as the violin plots.
+
+### Across Samples
+
+
+```{r, fig.width = 12, fig.height = 20}
+ctrl_annotated$cellType <- Idents(ctrl_annotated)
+
+genes_of_interest <- c(c("SPDEF", "AGR2", "TFF3"),  c("MUC5AC", "MUC5B"))
+
+feature_data <- FetchData(ctrl_annotated, vars = c(genes_of_interest, c("sampleType", "cellType")))
+
+
+plots <- list()
+
+for (gene in genes_of_interest) {
+  p <- ggplot(feature_data, aes(x = cellType, y = .data[[gene]], fill = cellType)) +
+  geom_boxplot(outlier.shape = NA) +
+  theme_minimal() +
+  labs(
+    title = paste("Expression of", gene),
+    x = "Cell Type",
+    y = "Expression Level"
+  ) +
+  theme(legend.position = "none") +
+  scale_fill_manual("Sample", values = cellColors) +  
+  scale_x_discrete(guide = guide_axis(angle = 45))
+
+  plots[[gene]] <- p
+}
+
+combined_plot <- wrap_plots(plots, ncol = 2)  + plot_annotation("Box plots of goblet COPD markers across all cell types in control samples") 
+
+
+combined_plot
+
+ggsave(
+  "../fig/box_goblet_ctrl_all.pdf",
+  plot = combined_plot,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 25,
+  height = 10,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+
+```
+
+
+### Split by Sample
+
+
+#### Across cell types
+
+
+```{r, fig.width = 12, fig.height = 17}
+
+plots <- list()
+
+for (gene in genes_of_interest) {
+
+  p <- ggplot(feature_data, aes(x = cellType, y = .data[[gene]], fill = sampleType)) +
+    geom_boxplot(outlier.shape = NA,) + 
+    theme_minimal() +
+    labs(
+      title = paste("Expression of", gene),
+      x = "Cell Type",
+      y = "Expression Level"
+    ) +
+    theme(legend.position = "none")   +
+  scale_fill_manual("Sample", values = sampleColors)+  
+  scale_x_discrete(guide = guide_axis(angle = 45))
+  
+
+  plots[[gene]] <- p
+}
+
+combined_plot <- wrap_plots(plots, ncol = 2)  +
+  theme(legend.position = "right") + plot_annotation("Box plots of goblet COPD markers across all cell types split by control sample")
+
+combined_plot
+
+ggsave(
+  "../fig/box_goblet_ctrl_splitbysample.pdf",
+  plot = combined_plot,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 25,
+  height = 20,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+
+```
+
+
+#### Goblet and Club cells only
+
+```{r, fig.width = 13, fig.height = 15}
+
+goblet_data <- feature_data %>% filter(cellType == c("Goblet", "Club"))
+
+plots <- list()
+for (gene in genes_of_interest) {
+  p <- ggplot(goblet_data, aes(x = cellType, y = .data[[gene]], fill = sampleType)) +
+    geom_boxplot(outlier.shape = NA) +  
+    geom_beeswarm(color = "black", size = 0.3, alpha = 1, dodge.width = 0.75) +  
+    theme_minimal() +
+    labs(
+      title = paste("Expression of", gene),
+      x = "Cell Type",
+      y = "Expression Level"
+    ) +
+    theme(legend.position = "none") +
+    scale_fill_manual("Sample", values = sampleColors) +
+    scale_color_manual("Sample", values = sampleColors) +  
+    scale_x_discrete(guide = guide_axis(angle = 45))
+  
+  plots[[gene]] <- p
+  p
+}
+
+combined_plot <- wrap_plots(plots, ncol = 2) +
+  theme(legend.position = "right") +
+  plot_annotation("Box plots with beeswarm points of goblet COPD markers across only goblet and club cells split by control sample")
+
+combined_plot
+```
+
+
+## Checking cells with non-zero expression
+
+Checking the number of cells with non-zero expression of certain marker genes that do not appear in the results of analysis as a result of no expression in the majority of cells. We find that CLCA1 is only expressed in 44 cells across 15165 in the entire integrated control object.
+
+
+```{r}
+non_zero_cells <- function(gene_of_interest){
+
+expression_matrix <- GetAssayData(ctrl_UMAP, slot = "data", assay = "RNA")
+
+gene_expression <- expression_matrix[gene_of_interest, , drop = FALSE]
+
+any_non_zero <- any(gene_expression > 0)
+
+if (any_non_zero) {
+  print(paste("There are non-zero cells for gene:", gene_of_interest))
+} else {
+  print(paste("All cells have zero expression for gene:", gene_of_interest))
+}
+non_zero_cells <- sum(gene_expression > 0)
+
+cat("Number of cells with non-zero expression for", gene_of_interest, ":", non_zero_cells, "\n")}
+
+non_zero_cells("FOXA3")
+non_zero_cells("CLCA1")
+```
+
+## GSEA
+
+### KEGG GSEA
+
+```{r}
+kegg_gsea <- function(markers_obj,
+                             cluster = "10uM",  # Optional cluster filter
+                             organism = "hsa",
+                             pvalueCutoff = 0.05,
+                             pAdjustMethod = "BH") {
+  
+  # Load required packages
+  require(clusterProfiler)
+  require(org.Hs.eg.db)
+  require(tidyverse)
+  
+  # 1. Detect input type and standardize format
+  if ("gene" %in% colnames(markers_obj)) {
+    # FindAllMarkers format
+    working_df <- markers_obj %>%
+      dplyr::rename(gene_symbol = gene)
+  } else {
+    # FindMarkers format (genes in rownames)
+    working_df <- markers_obj %>%
+      tibble::rownames_to_column(var = "gene_symbol")
+  }
+  
+  # 2. Optional cluster filtering
+  if (!is.null(cluster) && ("cluster" %in% colnames(working_df))) {
+    working_df <- working_df %>%
+      dplyr::filter(cluster == !!cluster)
+  } else if (!is.null(cluster)) {
+    warning("Cluster specified but no 'cluster' column found - proceeding without filtering")
+  }
+  
+  # 3. Prepare ranked gene list
+  working_df <- working_df %>%
+    arrange(desc(avg_log2FC))
+  
+  gene_list <- working_df$avg_log2FC
+  names(gene_list) <- working_df$gene_symbol
+  
+  # 4. Convert gene symbols to Entrez IDs
+  entrez_ids <- working_df %>%
+    dplyr::select(gene_symbol) %>%
+    distinct() %>%
+    mutate(entrez = mapIds(org.Hs.eg.db,
+                          keys = gene_symbol,
+                          column = "ENTREZID",
+                          keytype = "SYMBOL",
+                          multiVals = "first")) %>%
+    filter(!is.na(entrez))
+  
+  # Filter gene list to only mapped genes
+  kegg_gene_list <- gene_list[names(gene_list) %in% entrez_ids$gene_symbol]
+  names(kegg_gene_list) <- entrez_ids$entrez[match(names(kegg_gene_list), entrez_ids$gene_symbol)]
+  
+  # 5. Run KEGG analysis
+  if (length(kegg_gene_list) < 10) {
+    stop("Insufficient genes with Entrez mappings (need ≥10). Check gene symbols.")
+  }
+  
+  kegg_results <- gseKEGG(
+    geneList = sort(kegg_gene_list, decreasing = TRUE),
+    organism = organism,
+    pvalueCutoff = pvalueCutoff,
+    pAdjustMethod = pAdjustMethod,
+    minGSSize = 10,
+    maxGSSize = 500,
+    verbose = FALSE,
+    seed = TRUE
+  )
+  
+  return(kegg_results)
+}
+```
+
+### MSigDB GSEA
+
+```{r}
+msigdb_gsea <- function(markers_obj, 
+                    category = "H", 
+                    cluster = "10uM",
+                    pvalueCutoff = 0.05,
+                    pAdjustMethod = "BH") {
+  
+  # Load required packages
+  require(clusterProfiler)
+  require(org.Hs.eg.db)
+  require(msigdbr)
+  require(tidyverse)
+  
+  # 1. Detect input type and standardize format
+  if ("gene" %in% colnames(markers_obj)) {
+    # FindAllMarkers format (gene column exists)
+    working_df <- markers_obj %>%
+      dplyr::rename(gene_symbol = gene)
+  } else {
+    # FindMarkers format (genes in rownames)
+    working_df <- markers_obj %>%
+      tibble::rownames_to_column(var = "gene_symbol")
+  }
+  
+  # 2. Apply cluster filtering if cluster column exists
+  if ("cluster" %in% colnames(working_df)) {
+    working_df <- working_df %>%
+      dplyr::filter(cluster == !!cluster)
+  }
+  
+  # 3. Prepare ranked gene list
+  working_df <- working_df %>%
+    arrange(desc(avg_log2FC))
+  
+  gene_list <- working_df$avg_log2FC
+  names(gene_list) <- working_df$gene_symbol
+  
+  # 4. Convert gene symbols to Entrez IDs
+  entrez_ids <- working_df %>%
+    dplyr::select(gene_symbol) %>%
+    distinct() %>%
+    mutate(entrez = mapIds(org.Hs.eg.db,
+                          keys = gene_symbol,
+                          column = "ENTREZID",
+                          keytype = "SYMBOL",
+                          multiVals = "first")) %>%
+    filter(!is.na(entrez))
+  
+  # Filter and rename the gene list
+  gene_list <- gene_list[names(gene_list) %in% entrez_ids$gene_symbol]
+  names(gene_list) <- entrez_ids$entrez[match(names(gene_list), entrez_ids$gene_symbol)]
+  
+  # 5. Get gene sets
+  msig_df <- msigdbr(species = "Homo sapiens", category = category)
+  term2gene <- msig_df %>% dplyr::select(gs_name, entrez_gene)
+  
+  # 6. Run GSEA
+  gsea_results <- GSEA(
+    geneList = gene_list,
+    TERM2GENE = term2gene,
+    pvalueCutoff = pvalueCutoff,
+    pAdjustMethod = pAdjustMethod,
+    minGSSize = 10,
+    maxGSSize = 500,
+    seed = TRUE,
+    by = "fgsea"
+  )
+  
+  return(gsea_results)
+}
+```
+
+
+### Reactome
+
+```{r}
+reactome_gsea <- function(markers_obj,
+                         cluster = "10uM",
+                         organism = "human",
+                         pvalueCutoff = 0.05,
+                         pAdjustMethod = "BH") {
+  
+  # Load required packages
+  require(ReactomePA)
+  require(clusterProfiler)
+  require(org.Hs.eg.db)
+  require(tidyverse)
+  
+  # 1. Detect input type and standardize format
+  if ("gene" %in% colnames(markers_obj)) {
+    working_df <- markers_obj %>%
+      dplyr::rename(gene_symbol = gene)
+  } else {
+    working_df <- markers_obj %>%
+      tibble::rownames_to_column(var = "gene_symbol")
+  }
+  
+  # 2. Optional cluster filtering
+  if (!is.null(cluster) && ("cluster" %in% colnames(working_df))) {
+    working_df <- working_df %>%
+      dplyr::filter(cluster == !!cluster)
+  } else if (!is.null(cluster)) {
+    warning("Cluster specified but no 'cluster' column found - proceeding without filtering")
+  }
+  
+  # 3. Handle duplicate genes by averaging their log2FC values
+  working_df <- working_df %>%
+    group_by(gene_symbol) %>%
+    summarise(avg_log2FC = mean(avg_log2FC, na.rm = TRUE)) %>%
+    arrange(desc(avg_log2FC))
+  
+  gene_list <- working_df$avg_log2FC
+  names(gene_list) <- working_df$gene_symbol
+  
+  # 4. Convert gene symbols to Entrez IDs
+  entrez_ids <- working_df %>%
+    dplyr::select(gene_symbol) %>%
+    distinct() %>%
+    mutate(entrez = mapIds(org.Hs.eg.db,
+                          keys = gene_symbol,
+                          column = "ENTREZID",
+                          keytype = "SYMBOL",
+                          multiVals = "first")) %>%
+    filter(!is.na(entrez))
+  
+  # Filter gene list to only mapped genes
+  reactome_gene_list <- gene_list[names(gene_list) %in% entrez_ids$gene_symbol]
+  names(reactome_gene_list) <- entrez_ids$entrez[match(names(reactome_gene_list), entrez_ids$gene_symbol)]
+  
+  # Remove any remaining duplicates (just in case)
+  reactome_gene_list <- reactome_gene_list[!duplicated(names(reactome_gene_list))]
+  
+  # 5. Run Reactome analysis
+  if (length(reactome_gene_list) < 10) {
+    stop("Insufficient genes with Entrez mappings (need ≥10). Check gene symbols.")
+  }
+  
+  reactome_results <- gsePathway(
+    geneList = sort(reactome_gene_list, decreasing = TRUE),
+    organism = organism,
+    pvalueCutoff = pvalueCutoff,
+    pAdjustMethod = pAdjustMethod,
+    minGSSize = 10,
+    maxGSSize = 500,
+    verbose = FALSE
+  )
+  
+  return(reactome_results)
+}
+```
+
+### Results
+
+```{r}
+results1 <- msigdb_gsea(ctrl_vs_COPD_goblet)
+dotplot(results1)
+
+ggsave(
+  "../fig/mine_copd_gsea.pdf",
+  plot = dotplot(results1, showCategory = 8),
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 14,
+  height = 6,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+```{r}
+results2 <- reactome_gsea(ctrl_vs_COPD_goblet)
+dotplot(results2)
+```
+
+```{r}
+results3 <- kegg_gsea(ctrl_vs_COPD_goblet)
+dotplot(results3)
+```
+# Epigenetic Modifiers
+
+Epigenetic mechanisms are known to play a significant role in chronic respiratory diseases [@jurkowskaRoleEpigeneticMechanisms2024]. Using the dbEM database of epigenetic modifiers—curated from both cancerous and normal genomes—we investigated differential expression in COPD compared to healthy controls.
+
+The results were largely consistent whether analyzing across all cell types or subsetting to focus on specific cell types, such as basal or goblet cells. The analysis was repeated using only the male patient-derived samples to ensure robustness.
+
+One of the most significant findings was the upregulation of HDAC9 in COPD samples. HDAC9 inhibition has been shown to enhance skeletal muscle regeneration in mice with sarcopenic COPD [@zhengHDAC9InhibitionReduces2024]. HDAC9 is involved in repressing proinflammatory cytokine production in alveolar macrophages. Interestingly, other HDAC mRNAs (e.g., HDAC2, HDAC5, and HDAC8) are downregulated in COPD patients [@itoDecreasedHistoneDeacetylase2005], which aligns with the results in the data table, although their log-fold changes are relatively small. Notably, HDAC9 is the only HDAC upregulated in COPD.
+
+
+
+## All Cell Types
+
+There are 159 dbEM features out of 167 total in the database that are found in the integrated control object.
+
+```{r}
+ctrl_annotated <- annotate_cellTypes_ch2(ctrl_UMAP)
+DefaultAssay(ctrl_annotated) <- "RNA"
+ctrl_annotated_basal <- subset(ctrl_annotated, idents = "Basal")
+
+Idents(ctrl_annotated_basal) <- "sampleType"
+
+
+dbEM_file <- read_excel("../data/dbEM.xlsx")
+dbEM_proteins <- dbEM_file %>% pull(Protein)
+dbEM_features <- dbEM_proteins[dbEM_proteins %in% rownames(ctrl_annotated)]
+
+length(dbEM_features)
+```
+
+### dbEM Gene DE Analysis
+
+```{r}
+
+Idents(ctrl_annotated) <- "sampleType"
+
+ctrl_vs_COPD_all_dbEM <- FindMarkers(ctrl_annotated, 
+                                        features = dbEM_features, 
+                                        ident.2 = "1. HBEC D1 Control", 
+                                        ident.1 = c("4. COPD D1 Control", "7. COPD D2 Control"), 
+                                        logfc.threshold = -Inf, 
+                                        min.pct = 0)
+saveRDS(ctrl_vs_COPD_all_dbEM, "../data/ctrl_vs_COPD_all_dbEM.Rds")
+```
+
+#### Data Table
+
+```{r}
+DT::datatable(ctrl_vs_COPD_all_dbEM)
+```
+
+
+#### Volcano Plot
+
+```{r, fig.height = 8, fig.width = 12}
+volcanoplot <- EnhancedVolcano(ctrl_vs_COPD_all_dbEM, 
+                rownames(ctrl_vs_COPD_all_dbEM), 
+    FCcutoff = 0.2,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "", 
+       subtitle = "") + xlim(-1.2, 1.2) + 
+  annotate("text", x = 0.8, y = 5, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -0.8, y = 50, label = "Threshold log2FC = -0.2", size = 4, hjust = 0) +
+  annotate("text", x = 0.82, y = 50, label = "Threshold log2FC = 0.2", size = 4, hjust = 1)
+
+volcanoplot
+
+ggsave(
+  "../fig/volcano_ctrl_all_significant.pdf",
+  plot = volcanoplot,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 15,
+  height = 7,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+
+#### Dot Plots
+
+```{r}
+DotPlot(object = ctrl_annotated, features = c("UTY", "HDAC9", "RUVBL1", "SMYD3", "SMYD2")) + ggtitle("Dot plot of dbEM modifiers for control samples") + coord_flip()
+```
+
+
+#### Violin Plots
+
+
+UTY is not expressed in sample no. 7 as it derives from a female patient. We re-run analysis later excluding this sample.
+
+```{r, fig.height = 21, fig.width = 13}
+positive_dbEM_COPD <- c("UTY", "HDAC9", "RUVBL1", "RUVBL2", "KDM1B", "SMYD3", "SMYD2")
+ctrl_annotated <- annotate_cellTypes_ch2(ctrl_UMAP)
+VlnPlot(object = ctrl_annotated, features = positive_dbEM_COPD, split.by = "sampleType", pt.size = 0, cols = sampleColors, ncol = 2) + plot_annotation("Violin plots of dbEM modifiers in control samples which are positive markers of COPD (all cell types)") + theme(legend.position = "right")
+```
+
+```{r, fig.height = 21, fig.width = 13}
+VlnPlot(object = ctrl_annotated, features = positive_dbEM_COPD, group.by = "sampleType", pt.size = 0.05, cols = sampleColors, ncol = 2) + plot_annotation("Violin plots of dbEM modifiers in control samples which are positive markers of COPD (all cell types), grouped by sample") + theme(legend.position = "right")
+```
+
+
+## Basal Cells
+
+
+### Unsupervised DE Analysis
+
+Unsupervised analysis of the differentially expressed genes in basal cells in the healthy vs COPD patient samples.
+
+
+```{r}
+ctrl_vs_COPD_basal <- FindMarkers(ctrl_annotated_basal, 
+                           ident.2 = "1. HBEC D1 Control", 
+                            ident.1 = c("4. COPD D1 Control", "7. COPD D2 Control"), logfc.threshold = -Inf, min.pct = 0)
+
+saveRDS(ctrl_vs_COPD_basal, "../data/ctrl_vs_COPD_basal.Rds")
+```
+
+#### Data Table
+
+```{r}
+
+DT::datatable(ctrl_vs_COPD_basal)
+```
+
+
+#### Volcano Plot
+
+
+```{r,fig.height = 8, fig.width = 12}
+
+volcanoplot <- EnhancedVolcano(ctrl_vs_COPD_basal, 
+                rownames(ctrl_vs_COPD_basal), 
+    FCcutoff = 1,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "DE analysis of COPD vs healthy basal cells in control samples", 
+       subtitle = "Positive Log2 fold change indicates higher expression in COPD patients") + xlim(-2, 2) + 
+  annotate("text", x = 1.5, y = 5, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -1.3, y = 150, label = "Threshold log2FC = -1", size = 4, hjust = 0) +
+  annotate("text", x = 1.3, y = 150, label = "Threshold log2FC = 1", size = 4, hjust = 1)
+
+volcanoplot
+```
+
+
+### dbEM Gene DE Analysis
+
+Repeating DE analysis of basal cells focusing on dbEM features:
+
+
+```{r}
+ctrl_vs_COPD_basal_dbEM <- FindMarkers(ctrl_annotated_basal, 
+                                        features = dbEM_features, 
+                                        ident.2 = "1. HBEC D1 Control", 
+                                        ident.1 = c("4. COPD D1 Control", "7. COPD D2 Control"), 
+                                        logfc.threshold = -Inf, 
+                                        min.pct = 0)
+```
+
+#### Data Table
+
+```{r}
+DT::datatable(ctrl_vs_COPD_basal_dbEM)
+```
+
+#### Volcano Plot
+
+```{r, fig.height = 8, fig.width = 12}
+volcanoplot <- EnhancedVolcano(ctrl_vs_COPD_basal_dbEM, 
+                rownames(ctrl_vs_COPD_basal_dbEM), 
+    FCcutoff = 0.2,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "", 
+       subtitle = "") + xlim(-1.1, 0.7) + 
+  annotate("text", x = -1, y = 8, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -0.55, y = 70, label = "Threshold log2FC = -0.2", size = 4, hjust = 0) +
+  annotate("text", x = 0.55, y = 70, label = "Threshold log2FC = 0.2", size = 4, hjust = 1)
+
+volcanoplot
+ggsave(
+  "../fig/volcano_ctrl_basal_dbEM.pdf",
+  plot = volcanoplot,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 15,
+  height = 7,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+```{r}
+plot2 <- VlnPlot(
+  object = ctrl_annotated_basal,
+  features = "HDAC9",
+  split.by = "sampleType",
+  pt.size = 0.1,
+  cols = sampleColors,
+  ncol = 2
+) +
+  theme(
+    legend.position = "none",
+    legend.box.margin = margin(0, 0, 0, 0),
+    legend.spacing.x = unit(0, 'pt'),
+    legend.spacing.y = unit(0, 'pt'),
+    plot.margin = margin(5, 5, 5, 5)  # adjust as needed
+  ) +
+  guides(fill = "none", color = "none")
+plot2
+```
+```{r}
+ggsave(
+  "../fig/vln_hdac9.pdf",
+  plot = plot2,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 7,
+  height = 7,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+
+#### Dot Plots
+
+```{r}
+DotPlot(object = ctrl_annotated_basal, features = c("UTY", "HDAC9", "SMYD3", "KDM6A", "KDM5D", "NCOA3")) + ggtitle("Dot plot of dbEM modifiers for control samples (basal cells only)") + coord_flip()
+
+```
+
+#### Violin Plots
+
+
+```{r, fig.height = 14}
+VlnPlot(object = ctrl_annotated_basal, features = c("UTY", "HDAC9", "SMYD3", "KDM6A", "KDM5D", "NCOA3"), split.by = "sampleType", pt.size = 0.1, cols = sampleColors, ncol = 2) + plot_annotation("Violin plots of dbEM modifiers in control samples (basal cells only)") + theme(legend.position = "right")
+```
+
+## Goblet and Club Cells
+
+Largely similar results for just the subset of goblet and club cells.
+
+```{r}
+Idents(ctrl_annotated_gobclub) <- "sampleType"
+ctrl_vs_COPD_goblet_dbEM <- FindMarkers(ctrl_annotated_gobclub, 
+                                        features = dbEM_features, 
+                                        ident.2 = "1. HBEC D1 Control", 
+                                        ident.1 = c("4. COPD D1 Control", "7. COPD D2 Control"), 
+                                        logfc.threshold = -Inf, 
+                                        min.pct = 0)
+```
+
+### Data Table 
+
+```{r}
+DT::datatable(ctrl_vs_COPD_goblet_dbEM)
+```
+
+
+### Volcano Plot
+
+```{r, fig.height = 8, fig.width = 12}
+volcanoplot <- EnhancedVolcano(ctrl_vs_COPD_goblet_dbEM, 
+                rownames(ctrl_vs_COPD_goblet_dbEM), 
+    FCcutoff = 0.2,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "DE analysis of epigenetic modifiers in COPD vs healthy \n control samples (goblet and club cells)", 
+       subtitle = "Positive Log2 fold change indicates higher expression in COPD patients") + xlim(-1.2, 1.2) + 
+  annotate("text", x = 0.8, y = 5, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -0.8, y = 70, label = "Threshold log2FC = -0.2", size = 4, hjust = 0) +
+  annotate("text", x = 0.8, y = 70, label = "Threshold log2FC = 0.2", size = 4, hjust = 1)
+volcanoplot
+```
+
+
+## Male Samples Only
+
+The DE analysis was re-run comparing only male-derived samples (COPD vs. healthy, as before) across all cell types.
+
+UTY, a Y-chromosome gene, was tested by comparing sample no. 1 against sample no. 4 (both derived from male patients) to determine if UTY downregulation is linked to COPD in males. The results indicate that UTY is still significantly less expressed in COPD, though with a much smaller log-fold change.
+
+It is worth noting that literature suggests COPD may be exacerbated in females due to differences in sex chromosomes [@yangWidespreadSexualDimorphism2019]. This raises the possibility that functional differences between UTY and its X-chromosome homologue, UTX (also called KDM6A, a lysine demethylase), may contribute to sex-specific differences in COPD development.
+
+In the male COPD sample, we observed that KDM6A is downregulated, with a log-fold change of -0.198. UTY was previously believed to be non-functional, but experiments with knockout mice suggest that the protein has functional roles. According to Gažová et al. [@gazovaLysineDemethylasesKDM6A2019], "female mice with homozygous deletion of Kdm6a do not survive, but hemizygous males are viable, attributed to the presence of the Uty gene."
+
+* Y-chromosome genes have been proposed to regulate inflammation [@reddyYchromosomeRegulatesHallmark2022].
+* UTY is positively correlated with lung function in male COPD patients [@reddyCigaretteSmokingCOPD2023a].
+
+
+
+```{r}
+Idents(ctrl_annotated) <- "sampleType"
+
+ctrl_vs_COPD_all_dbEM_male <- FindMarkers(ctrl_annotated, 
+                                        features = dbEM_features, 
+                                        ident.2 = "1. HBEC D1 Control", 
+                                        ident.1 ="4. COPD D1 Control", 
+                                        logfc.threshold = -Inf, 
+                                        min.pct = 0)
+```
+
+### Data Table
+
+```{r}
+DT::datatable(ctrl_vs_COPD_all_dbEM_male)
+```
+
+### Volcano Plot
+
+```{r, fig.height = 8, fig.width = 12}
+volcanoplot <- EnhancedVolcano(ctrl_vs_COPD_all_dbEM_male, 
+                rownames(ctrl_vs_COPD_all_dbEM_male), 
+    FCcutoff = 0.2,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "DE analysis of epigenetic modifiers in COPD vs healthy \n male control samples", 
+       subtitle = "Positive Log2 fold change indicates higher expression in COPD patients") + xlim(-1.2, 1.2) + 
+  annotate("text", x = 0.8, y = 5, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -0.8, y = 150, label = "Threshold log2FC = -0.2", size = 4, hjust = 0) +
+  annotate("text", x = 0.8, y = 150, label = "Threshold log2FC = 0.2", size = 4, hjust = 1)
+volcanoplot
+```
+
+## Feature Plots
+
+```{r, fig.height = 25, fig.width = 19}
+FeaturePlot(ctrl_annotated, features = c("HDAC9", "UTY", "SMYD3", "SMYD2", "RUVBL1"), split.by = "sampleType") + theme(legend.position = "right")
+```
+
+
+
+# Ciliated Stressed Cells
+
+Cluster 6 was annotated as an unknown subtype of ciliated cells, likely stressed/dying cells.
+
+* The DNAH (Dynein Axonemal Heavy Chain) family of genes is upregulated in this unknown subtype, though these genes remain highly expressed in the main ciliated cluster. DNAH genes encode components of the ciliary axoneme that are essential for cilia motility.
+* RFX3, a transcription factor involved in motile ciliogenesis [@lemeilleInterplayRFXTranscription2020], is also upregulated in the unknown subtype.
+* Additionally, MPK10 and DCDC1, which play roles in cell cycle regulation, are upregulated in this cluster.
+* The cell type proportions barplot above shows a higher proportion of the unknown subtype in the COPD samples.
+
+Overall, these findings suggest that the unknown subtype may represent ciliated cells under stress (possibly linked to COPD) and/or in a different cell cycle stage compared to the main ciliated cluster.
+
+```{r}
+DefaultAssay(ctrl_annotated) <- "RNA"
+ctrl_annotated <- annotate_cellTypes_ch2(ctrl_UMAP)
+
+ctrl_annotated <- annotate_cellTypes_ch2(ctrl_UMAP)
+ciliatedsubtype <- FindMarkers(ctrl_annotated,
+                                     ident.2 = "Ciliated", 
+                                     ident.1 = "Ciliated (Stressed)", 
+                                     min.pct = 0.2, logfc.threshold = -Inf)
+
+#view the top 8 most highly differentially expressed genes
+top8_pos <- ciliatedsubtype %>% slice_max(n = 8, order_by = avg_log2FC)
+top8_neg <- ciliatedsubtype %>% slice_min(n = 8, order_by = avg_log2FC)
+
+
+top8_neg
+top8_pos
+```
+
+## Data Table
+
+```{r}
+DT::datatable(ciliatedsubtype)
+```
+
+## Volcano Plot
+
+
+```{r, fig.height = 8, fig.width = 12}
+volcanoplot <- EnhancedVolcano(ciliatedsubtype, 
+                rownames(ciliatedsubtype), 
+    FCcutoff = 1,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "DE analysis of ciliated cells of stressed cluster vs main cluster \n in control samples", 
+       subtitle = "Positive Log2 fold change indicates higher expression in the stressed cluster") + xlim(-1.2, 1.2) + 
+  annotate("text", x = 0.9, y = 9, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -0.9, y = 250, label = "Threshold log2FC = -1", size = 4, hjust = 0) +
+  annotate("text", x = 0.8, y = 250, label = "Threshold log2FC = 1", size = 4, hjust = 1)
+volcanoplot
+```
+
+### DNAH Gene Family
+
+```{r, fig.height = 8, fig.width = 12}
+
+dnah_genes <- rownames(ciliatedsubtype)[grep("DNAH", rownames(ciliatedsubtype))]
+volcanoplot <- EnhancedVolcano(ciliatedsubtype, 
+                rownames(ciliatedsubtype), selectLab = dnah_genes,
+    FCcutoff = 1,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "DE analysis of ciliated cells of stressed cluster vs main cluster \n in control samples", 
+       subtitle = "Positive Log2 fold change indicates higher expression in the stressed cluster. \n DNAH gene family labelled.") + xlim(-1.2, 1.2) + 
+  annotate("text", x = 0.9, y = 9, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -0.9, y = 250, label = "Threshold log2FC = -1", size = 4, hjust = 0) +
+  annotate("text", x = 0.8, y = 250, label = "Threshold log2FC = 1", size = 4, hjust = 1)
+volcanoplot
+```
+
+## Violin Plots
+
+
+```{r, fig.height = 30, fig.width = 11}
+VlnPlot(object = ctrl_annotated, features = c(dnah_genes, "RFX3", "DCDC1", "MAPK10"), split.by = "sampleType", ncol = 2, pt.size = 0)
+```
+```{r}
+gene_vector <- c("TUBB4B", "DYNLT1", "DYNLL1", "UFC1", "TUBA1A", 
+                 "MRPS31", "BASP1", "ATPIF1", "MORN2", "C1orf189",
+                 "TCTEX1D4", "HSBP1", "HSPB11", "HRASLS2", "HSP90AA1",
+                 "CRIP1", "AKAP14", "TCTEX1D2", "SMIM22", "CAPSL")
+
+volcanoplot <- EnhancedVolcano(ciliatedsubtype, 
+                rownames(ciliatedsubtype), selectLab = gene_vector,
+    FCcutoff = 1,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + labs(title = "DE analysis of ciliated cells of stressed cluster vs main cluster \n in control samples", 
+       subtitle = "Positive Log2 fold change indicates higher expression in the stressed cluster. \n DNAH gene family labelled.") + xlim(-3.5, 1.5) + 
+  annotate("text", x = 0.9, y = 9, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -0.9, y = 250, label = "Threshold log2FC = -1", size = 4, hjust = 0) +
+  annotate("text", x = 0.8, y = 250, label = "Threshold log2FC = 1", size = 4, hjust = 1)
+volcanoplot
+```
+```{r, fig.width = 20}
+ciliated_genes <- c("C20orf85", "TUBA4B", "C9orf24", "TEKT1", "ZMYND10", 
+                   "SNTN", "FAM92B", "CCDC170", "RSPH9", "C1orf194",
+                   "RSPH1", "ROPN1L", "EFCAB1", "DNAH12", "LRRC46",
+                   "C11orf88", "LRRIQ1", "CFAP52", "C9orf116", "CFAP73")
+
+volcanoplot <- EnhancedVolcano(positive_markers, 
+                rownames(positive_markers), selectLab = significant_genes,
+    FCcutoff = 1,  boxedLabels = TRUE, drawConnectors = TRUE, 
+    pCutoff = 0.05, pointSize = 1.2,
+                x ="avg_log2FC", 
+                y ="p_val_adj") + xlim(0, 1.5) + 
+  annotate("text", x = 1.2, y = 9, label = "Threshold p = 0.05", size = 4, hjust = 0) +
+  annotate("text", x = -0.9, y = 250, label = "Threshold log2FC = -1", size = 4, hjust = 0) +
+  annotate("text", x = 1.2, y = 200, label = "Threshold log2FC = 1", size = 4, hjust = 1) +
+  labs(title = "", subtitle = "") 
+volcanoplot
+```
+```{r}
+ggsave(
+  "../fig/cilsub_volcano.pdf",
+  plot = volcanoplot,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 25,
+  height = 20,
+  units = "cm",
+  dpi = 600,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+
+```{r}
+all_markers <- FindAllMarkers(ctrl_annotated, min.pct = 0)
+saveRDS(all_markers, "../data/all_ctrl_markers.Rds")
+```
+```{r}
+DT::datatable(all_markers)
+```
+
+```{r}
+
+# 1. Subset for positive markers only (logFC > 0)
+positive_markers <- subset(ciliatedsubtype, avg_log2FC > 0)
+
+# 2. Filter for:
+#    - Adjusted p-value < 0.05 AND
+#    - (logFC > 1 OR gene is in DNAH family)
+library(stringr)  
+
+significant_genes <- positive_markers %>%
+  rownames_to_column("gene") %>%  # Convert rownames to a column
+  filter(avg_log2FC > 0,  # Positive markers only
+         p_val_adj < 0.05,  # Significant p-value
+         (avg_log2FC > 1 | str_detect(gene, "^DNAH"))) %>%  # Your criteria
+  pull(gene)  # Extract gene names as vector
+
+# Result:
+print(significant_genes)
+```
+
+# References

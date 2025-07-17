@@ -1,0 +1,645 @@
+---
+title: "Chapter 3: NTCU Treatment: Integration and Annotation"
+author: "Joanna Xie"
+date: "`r doc_date()`"
+bibliography: ../data/chap3_bib.bib
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: "hide"
+citation_package: natbib  
+csl: ../data/nature.csl  
+---
+
+```{r}
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  fig.width = 10,
+  warning = FALSE,
+  message = FALSE,
+  verbose = FALSE,
+  root.dir = "../html")
+```
+
+
+
+```{r Libraries, echo=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(Seurat)
+library(cowplot)
+library(patchwork)
+library(scDblFinder)
+library(speckle)
+library(monocle3)
+library(SeuratWrappers)
+library(EnhancedVolcano)
+```
+
+```{r}
+cellColors <- c(
+  "Ciliated" = "#e69317",        
+  "Club" = "#56c0f5",           
+  "Basal" = "#059971",          
+  "Basal-Club Transitional" = "#f0e22b",        
+  "Ciliated (Stressed)" = "#0540b5", 
+  "Proliferating Basal" = "#8a491a", 
+  "Proliferating + Ciliated" = "#c2559c", 
+  "Ionocyte" = "#7bd938",        
+  "Goblet" = "#535366",           
+  "Unknown (Transitional)" = "#6A0DAD",           
+  "Tuft" = "#ff6978"           
+)
+
+sampleColors <- c(
+"1. HBEC D1 Control"  = "#f0a60c", 
+"2. HBEC D1 3uM" = "#875b22",
+"3. HBEC D1 10uM" = "#522110",
+"4. COPD D1 Control"  = "#FF85AB", 
+"5. COPD D1 3uM" = "#823c6c",
+"6. COPD D1 10uM" = "#3c0e40",
+"7. COPD D2 Control"  = "#09717d",
+"8. COPD D2 3uM" = "#1b4d44",
+"9. COPD D2 10uM" = "#0f3024"
+) 
+
+
+treatmentColors <- c(
+  "Control" = "#F9D576",
+  "3 μM" = "#F57634",
+  "10 μM" = "#A01813"
+)
+```
+
+
+# Summary
+
+
+# Loading Data
+
+
+```{r}
+metafile<- read.csv("../data/meta_data.csv")
+
+metafile[c("Number", "disease", "D", "Treatment")] <- str_split_fixed(metafile$Sample.name, ' ', 4)
+
+
+# List names of all  libraries 
+libs = c("SITTH1",
+         "SITTA2",
+         "SITTB2",
+         "SITTC2",
+         "SITTD2",
+         "SITTE2",
+         "SITTF2",
+         "SITTG2",
+         "SITTH2"
+         ) 
+
+# For each library name, get file path to read in the 10x data, then create Seurat Object.
+all_libraries_list <- lapply(libs, function(x){
+  
+# File path
+filename <- paste0("/data/jx303/processedData_2024ref/", x , "/outs/filtered_feature_bc_matrix/")
+  
+# 10x data
+data10x <- Read10X(data.dir = filename)
+  
+# Creating Seurat Object 
+obj <- CreateSeuratObject(counts = data10x, project = x, min.cells = 3, min.features = 100)
+ 
+# Extracts the orig.ident column as dataframe, renames the single column in the df as "Barcode"
+cell_sampleIDs <- as.data.frame(obj$orig.ident)
+colnames(cell_sampleIDs) <- "Barcode"
+cellIDs <- row.names(cell_sampleIDs) # Saves cellIDs variable from the row names of cell_samples_IDs
+
+#Add meta data to cell IDs for each library
+metaData <- left_join(cell_sampleIDs, 
+                      #add the data for this specific sampleID
+                      filter(metafile, Barcode ==x), by = "Barcode") 
+row.names(metaData) <- cellIDs
+# metaData has as many rows as there are cells in the libraries. The contents of each row for a given library are identical (sample metadata), only the row names, which gives the cell IDs, differ. 
+
+#add three meta data columns as three separate slots to each Seurat object 
+metaData$disease <- as.factor(metaData$disease)
+obj$tissueType <- metaData[6]
+
+metaData$Sample.name <- as.factor(metaData$Sample.name)
+obj$sampleType <- metaData[4]
+
+metaData$Treatment <- as.factor(metaData$Treatment)
+obj$treatment <- metaData[8]
+
+DefaultAssay(obj) <- "RNA"
+
+obj
+})
+
+names(all_libraries_list) <- libs
+```
+
+
+# Quality Control
+
+## Visualising Data Quality
+
+```{r, fig.width = 12, fig.height = 8}
+# In the Cell Ranger output, identified mitochondrial genes mostly start with MT-, which we use as the pattern.
+
+all_libraries_list <-  lapply(all_libraries_list, function(obj){
+  obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^MT-")
+  obj
+})
+
+# Violin plots to estimate suitable cut-offs for QC filtering.
+
+lapply(all_libraries_list, function(x){
+  p <- VlnPlot(x, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+  p[[1]] <- p[[1]] + ggtitle("No. Features")
+  p[[2]] <- p[[2]] + ggtitle("No. Counts")
+  p[[3]] <- p[[3]] + ggtitle("Mt %")
+  p
+
+})
+```
+
+```{r, fig.height = 8, fig.width= 9}
+lapply(all_libraries_list, function(x){
+  plot1 <- FeatureScatter(x, feature1 = "nCount_RNA", feature2 = "percent.mt")
+  plot2 <- FeatureScatter(x, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  plot1 + plot2
+})
+```
+
+
+Finding the 90th percentile for mitochondrial percentage of cells in each libraries. Highest is SITTC2 (14.9 %) and lowest is SITTH2 (8.6 %).
+
+```{r}
+
+mt_percentiles <- lapply(all_libraries_list, function(obj){
+  mito_percent <- obj$percent.mt
+  threshold_90 <- quantile(mito_percent, 0.90)
+})
+
+mt_percentiles
+```
+
+
+## Filtering
+
+```{r}
+all_libraries_QC <- lapply(all_libraries_list, function(x){
+  subset(x, subset = nFeature_RNA > 1000 & nCount_RNA < 100000 & nCount_RNA > 5000 & percent.mt < 15)
+})
+```
+
+
+## Doublet Removal
+
+```{r}
+
+all_libraries_QC<- lapply(all_libraries_QC, function(obj) {
+  sce <- as.SingleCellExperiment(obj)
+  
+  sce <- scDblFinder(sce)
+  
+  obj$doublet_class <- sce$scDblFinder.class
+  
+  obj <- subset(obj, subset = doublet_class == "singlet")
+})
+
+```
+
+
+# Normalisation and Variable Features
+
+
+```{r}
+all_libraries_filtered <- lapply(all_libraries_QC, function(x) {
+  
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+
+  })
+
+# Top 2000 repeatedly variable features across libraries selected for integration
+features <- SelectIntegrationFeatures(object.list = all_libraries_filtered)
+
+```
+
+
+## Variable Feature Plots
+
+
+```{r, fig.width = 13, fig.height = 7}
+lapply(1:length(all_libraries_filtered), function(i) {
+
+   x <- all_libraries_filtered[[i]]
+  
+  top5 <- head(VariableFeatures(x), 5)
+
+  plot1 <- VariableFeaturePlot(x)
+  plot2 <- LabelPoints(plot = plot1, points = top5, repel = TRUE)
+  plot1 + plot2 + plot_annotation(title = names(all_libraries_filtered[i]))
+  
+})
+```
+
+
+# Integration
+
+
+```{r}
+
+if(file.exists("../data/all_filtered_anchors.RData")){
+  
+  load(file = "../data/all_filtered_anchors.RData")
+
+  }else{
+    anchors_all <- FindIntegrationAnchors(object.list = all_libraries_filtered, anchor.features = features)
+    
+    save(anchors_all, file = "../data/all_filtered_anchors.RData")
+
+  }
+
+
+if(file.exists("../data/all_integrated.RData")){
+  
+  load(file = "../data/all_integrated.RData")
+  
+  }else{
+    
+    all_integrated <- IntegrateData(anchorset = anchors_all)
+    
+    save(all_integrated, file = "../data/all_integrated.RData")
+
+}
+```
+
+
+# Dimensionality Reduction
+
+## Scaling
+
+```{r}
+if(file.exists("../data/all_integrated.RData")){
+  
+  load(file = "../data/all_integrated.RData")
+
+  }else{
+    DefaultAssay(all_integrated) <- "integrated"
+    all_integrated <- ScaleData(all_integrated, verbose = FALSE, vars.to.regress = 'percent.mt')
+    
+    save(anchorsControl, file = "../data/all_integrated.RData")
+
+  }
+```
+
+
+## PCA
+
+```{r,fig.width=10, fig.height=8}
+all_integrated <- RunPCA(all_integrated, npcs = 35, verbose = FALSE)
+
+DimPlot(all_integrated, reduction = "pca") 
+```
+
+
+### Heatmap
+
+```{r, fig.width= 12, fig.height = 8}
+DimHeatmap(all_integrated, dims = 1:6, cells = 500, balanced = TRUE)
+```
+
+
+### Elbow Plot
+
+```{r,fig.width=10, fig.height=8}
+ElbowPlot(all_integrated, ndims = 35)
+```
+
+
+## UMAP
+
+```{r}
+all_integrated <- RunUMAP(all_integrated, reduction = "pca", dims = 1:30)
+```
+```{r,fig.width=10, fig.height=8}
+DefaultAssay(all_integrated) <- "integrated"
+
+```
+
+```{r,fig.width=15, fig.height=15}
+DimPlot(all_integrated, split.by = "sampleType", ncol = 3) 
+```
+
+
+### Clustering of UMAP
+
+```{r}
+all_integrated <- FindNeighbors(all_integrated, dims = 1:25)
+all_integrated <- FindClusters(all_integrated, resolution = 0.5, random.seed = 2000)
+
+head(Idents(all_integrated), 5)
+```
+
+
+### Plotting UMAP Clusters
+
+```{r,fig.width=10, fig.height=8}
+DimPlot(all_integrated, reduction = "umap") + ggtitle("UMAP Clusters of All Libraries")
+```
+
+# Annotation
+
+## Violin Plots of Biomarker Expression
+
+Violin plots showing known biomarker expression.
+
+Unlike in the integrated control samples alone, GP2 is now detected in the assay. 
+
+```{r ,fig.width=10, fig.height=8}
+# Known cell-type markers
+list_of_cellmarkers <- list(
+  Basal = c("KRT5", "KRT14", "TP63", "DAPL1", "NGFR"),
+  proliferatingBasal = c("MKI67", "TOP2A", "CDK1"),
+  BC_Club = c("KRT4", "KRT13"),
+  Club = c("SCGB1A1", "KRT15", "LYPD2"),
+  Ciliated = c("FOXJ1", "CCDC153", "CCDC113", "MLF1", "LZTFL1"),
+  Neuroendocine = c("CHGA", "ASCL1", "SOX9", "ITGA2", "ITGB4"), 
+  Tuft = c("POU2F3", "AVIL", "GNAT3", "TRPM5"),
+  Ionocyte = c("FOXI1", "CFTR", "ASCL3"),
+  Goblet = c("MUC5AC", "MUC5B", "GP2", "SPDEF")
+)
+
+DefaultAssay(all_integrated) <- "RNA"
+
+# Loop through each cell type and generate violin plots
+for (cell_type in names(list_of_cellmarkers)) {
+  markers <- list_of_cellmarkers[[cell_type]]
+
+  # Generate violin plots
+  p <- VlnPlot(
+    object = all_integrated,
+    features = markers,
+    pt.size = 0
+  ) 
+  p <- p + plot_annotation(title = paste("Cell Type:", cell_type, sep = " "))  
+  # Display the plot
+  print(p)}
+```
+
+
+## Manual Annotation
+
+```{r}
+all_integrated_anno <- RenameIdents(all_integrated, 
+                              "0" = "Ciliated", 
+                              "1" = "Ciliated", 
+                              "2" = "Club",
+                              "3" = "Ciliated",
+                              "4" = "Club", 
+                              "5" = "Basal", 
+                              "6" = "Unknown (Transitional)" , 
+                              "7" = "Basal Club Transitional",
+                              "8" = "Ciliated (Stressed)", 
+                              "9" = "Club",  
+                              "10" = "Ciliated", 
+                              "11" = "Ionocyte",
+                              "12" = "Ciliated",
+                              "13" = "Goblet",
+                              "14" = "Proliferating Basal",
+                              "15" = "Proliferating + Ciliated", 
+                              "16" = "Tuft", 
+                              "17" = "Ciliated"
+                              ) 
+
+all_integrated_anno$cellType <-  Idents(all_integrated_anno)
+all_integrated_anno$treatment <- factor(all_integrated_anno$treatment, levels = c("Control", "3uM", "10uM"))
+```
+
+
+## Annotated UMAP Plot
+
+
+
+```{r}
+DefaultAssay(all_integrated_anno) <- "integrated"
+
+saveRDS(all_integrated_anno, file = "../data/all_integrated_anno_final.rds")
+
+DimPlot(all_integrated_anno, cols = cellColors)
+
+```
+
+```{r, fig.width = 9, fig.height = 6}
+annoplot <-  DimPlot(all_integrated_anno, cols = cellColors) + ggtitle("Annotated UMAP of All Libraries")
+annoplot
+```
+
+
+### Split by Sample
+
+```{r, fig.width = 15, fig.height = 25}
+annoplot <-  DimPlot(all_integrated_anno, split.by = "sampleType", ncol = 2, cols = cellColors) 
+annoplot
+```
+
+
+### Split by Treatment
+
+```{r, fig.width = 15, fig.height = 12}
+annoplot <-  DimPlot(all_integrated_anno, split.by = "treatment", ncol = 2, cols = cellColors) 
+annoplot
+```
+
+# Additional Plots
+
+## Violin Plots of Annotated Clusters
+
+We observed higher expression of certain neuroendocrine markers (CHGA and ASCL1) in the tuft cell cluster. This may represent a rare population of neuroendocrine cells that could not be distinctly separated in the analysis. Neuroendocrine and tuft cells are both chemosensory lineages.
+
+* Neuroendocrine-tuft lineage plasticity is observed in small-cell lung cancer [@irelandBasalCellOrigin2024].
+* "Tuft cells transition to metaplastic neuroendocrine cells in pancreatic cancer" [@salas-escabillasTuftCellsTransdifferentiate2024].
+
+
+```{r,fig.width=10, fig.height=12}
+DefaultAssay(all_integrated_anno) <- "RNA"
+
+for (cell_type in names(list_of_cellmarkers)) {
+  markers <- list_of_cellmarkers[[cell_type]]
+
+  p <- VlnPlot(
+    object = all_integrated_anno,
+    features = markers,
+    pt.size = 0,
+    ncol =2,
+    cols = cellColors
+  ) 
+  p <- p + plot_annotation(title = paste("Biomarker Violin Plots (Annotated):", cell_type, sep = " "))  
+  print(p)}
+```
+
+
+## Mitochondrial Genes Feature Plot
+
+```{r ,fig.width=10, fig.height=8}
+FeaturePlot(all_integrated_anno, features = "percent.mt",min.cutoff = "q9") + plot_annotation("Mitchondrial Feature Plot for All Samples")
+```
+
+```{r ,fig.width=20, fig.height=8}
+FeaturePlot(all_integrated_anno, features = "percent.mt",min.cutoff = "q9", split.by = "treatment") + plot_annotation("Mitchondrial Feature Plot for All Samples")
+```
+
+
+# Cell-type Proportions 
+
+```{r ,fig.width=10, fig.height=8}
+
+DefaultAssay(all_integrated_anno) <- "RNA"
+
+all_integrated_anno2 <-all_integrated_anno
+
+Idents(all_integrated_anno2) <- factor(Idents(all_integrated_anno2),
+                                 levels = c("Ionocyte",
+                                             "Basal-Club Transitional", 
+                                             "Ciliated",
+                                             "Goblet",
+                                             "Club",
+                                             "Proliferating Basal",
+                                             "Proliferating + Ciliated",
+                                             "Basal",
+                                            "Tuft", 
+                                            "Unknown (Transitional)",
+                                            "Ciliated (Stressed)"
+                                            ))
+
+all_integrated_anno2$treatment <- factor(all_integrated_anno2$treatment, levels = c("Control", "NTCU 3 μM", "NTCU 10 μM"))
+
+prop_treatment <- plotCellTypeProps(all_integrated_anno2 ,clusters = Idents(all_integrated_anno2 ), sample =  all_integrated_anno2$treatment) + scale_fill_manual("Legend", values = cellColors)  +  
+  scale_x_discrete(guide = guide_axis(angle = 45)) + NoLegend()
+
+prop_treatment
+
+
+plotCellTypeProps(all_integrated_anno2 ,clusters = Idents(all_integrated_anno2 ), sample =  all_integrated_anno2$sampleType) + scale_fill_manual("Legend", values = cellColors)  +  
+  scale_x_discrete(guide = guide_axis(angle = 45)) + ggtitle("Cell Type Proportions Split by Sample")
+
+```
+```{r}
+ggsave(
+  "../fig/prop_ntcu.pdf",
+  plot = prop_treatment,
+  device = cairo_pdf,
+  path = NULL,
+  scale = 1,
+  width = 6,
+  height = 8,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+
+
+## Goblet Cells
+
+Association between treatment and goblet cell proportion seems inconsistent, possibly due to overlap in goblet and club cell clusters.
+
+```{r ,fig.width=10, fig.height=6}
+
+propsTable_treatment <- getTransformedProps(clusters = Idents(all_integrated_anno2), sample = all_integrated_anno2$treatment)
+props_treatment <- propsTable_treatment$Proportions
+
+propsTable_sample <- getTransformedProps(clusters = Idents(all_integrated_anno2), sample = all_integrated_anno2$sampleType)
+props_sample <-  propsTable_sample$Proportions
+
+plot_sampleType_prop <- function(celltype){
+  prop  <- as.data.frame(props_sample) %>% filter(clusters == celltype)
+  p <-  ggplot(prop, aes(x = sample, y = Freq, fill = sample)) +
+  geom_bar(stat = "identity") +
+  labs(title = paste0(celltype, " cell proportions"),
+       x = "Sample",
+       y = paste0("Proportion of ", celltype, " Cells")) +
+  theme_minimal() + scale_fill_manual("Sample", values = sampleColors)
+p + coord_flip()
+}
+
+plot_treatment_prop <- function(celltype){
+  prop  <- as.data.frame(props_treatment) %>% filter(clusters == celltype)
+  p <-  ggplot(prop, aes(x = sample, y = Freq, fill = sample)) +
+  geom_bar(stat = "identity") +
+  labs(title = paste0(celltype, " cell proportions"),
+       x = "Sample",
+       y = paste0("Proportion of ", celltype, " Cells")) +
+  theme_minimal() + scale_fill_manual("Sample", values = treatmentColors)
+p + coord_flip()
+}
+
+plot_sampleType_prop("Goblet")
+
+plot_treatment_prop("Goblet")
+
+```
+
+## Tuft Cells and Ionocytes
+
+There is a population of likely tuft cells that were not previously identified in the control samples alone. This does not seem to be induced by NTCU exposure. Indeed, tuft cell proportions become lower with increased NTCU concentration. There is possibly a transitionary state between ionocytes and tuft cells. The tuft cells were not distinguishable when analysing the integrated control sample object as the lower abundance of tuft cells were subsumed into the ionocyte cluster.
+
+Tuft cells express FOXI1, a master regulator of ionocytes. Conversely, annotated ionocytes express higher levels of POU2F3 and AVIL, markers of tuft cells, than other clusters. 
+
+* Lung cancers share hybrid tuft/ionocyte like features, suggesting a "bidirectional but immature differentiation status" [@yamadaPulmonaryCancersDifferent2022]
+* Another paper also identified "rare bipotent tuft-ionocyte progenitor cells" [@waghrayDeepLungCell2023], which may more accurately identify the cells labelled as ionocytes in the previous control analyses.
+* "POU2F3 is a master regulator of tuft cell identity in a variant form of SCLC" [@huangPOU2F3MasterRegulator2018].
+
+
+```{r,fig.width=10, fig.height=6}
+plot_sampleType_prop("Ionocyte")
+plot_sampleType_prop("Tuft")
+plot_treatment_prop("Ionocyte")
+plot_treatment_prop("Tuft")
+
+```
+
+## Unknown and Basal Cells
+
+There is a trend of the unknown (transitional) cell population increasing in relative abundance with increasing NTCU treatment, whilst basal-like cells outside of the unknown cluster decrease in abundance. Hence we hypothesise that emergence of the transitional cell state is related to tumor development in LUSC, recapitulated in vitro.
+
+```{r,fig.width=10, fig.height=6}
+plot_sampleType_prop("Unknown (Transitional)")
+plot_sampleType_prop("Basal")
+plot_sampleType_prop("Proliferating Basal")
+plot_sampleType_prop("Proliferating + Ciliated")
+plot_sampleType_prop("Basal Club Transitional")
+
+plot_treatment_prop("Unknown (Transitional)")
+plot_treatment_prop("Basal")
+plot_treatment_prop("Proliferating Basal")
+plot_treatment_prop("Proliferating + Ciliated")
+plot_treatment_prop("Basal Club Transitional")
+
+```
+
+## Other Cell Types
+
+```{r,fig.width=10, fig.height=6}
+plot_sampleType_prop("Ciliated")
+plot_sampleType_prop("Ciliated (Stressed)")
+plot_sampleType_prop("Club")
+
+plot_treatment_prop("Ciliated")
+plot_treatment_prop("Ciliated (Stressed)")
+plot_treatment_prop("Club")
+```
+
+
+
+# References

@@ -1,0 +1,1403 @@
+---
+title: "Chapter 4: NTCU Treatment Analysis"
+author: "Joanna Xie"
+date: "`r doc_date()`"
+bibliography: ../data/chap4_bib.bib
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: "hide"
+citation_package: natbib  
+csl: ../data/nature.csl  
+---
+
+
+```{r Libraries, echo=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(Seurat)
+library(cowplot)
+library(patchwork)
+library(speckle)
+library(EnhancedVolcano)
+library(clusterProfiler)
+library('org.Hs.eg.db')
+library(msigdbr)
+library(tidyverse)
+library(pheatmap)
+```
+
+
+
+
+
+```{r}
+cellColors <- c(
+  "Ciliated" = "#e69317",        
+  "Club" = "#56c0f5",           
+  "Basal" = "#059971",          
+  "Basal-Club Transitional" = "#f0e22b",        
+  "Ciliated (Stressed)" = "#0540b5", 
+  "Proliferating Basal" = "#8a491a", 
+  "Proliferating + Ciliated" = "#c2559c", 
+  "Ionocyte" = "#7bd938",        
+  "Goblet" = "#535366",           
+  "Unknown (Transitional)" = "#6A0DAD",           
+  "Tuft" = "#ff6978"           
+)
+
+sampleColors <- c(
+"1. HBEC D1 Control"  = "#f0a60c", 
+"2. HBEC D1 3uM" = "#875b22",
+"3. HBEC D1 10uM" = "#522110",
+"4. COPD D1 Control"  = "#FF85AB", 
+"5. COPD D1 3uM" = "#823c6c",
+"6. COPD D1 10uM" = "#3c0e40",
+"7. COPD D2 Control"  = "#09717d",
+"8. COPD D2 3uM" = "#1b4d44",
+"9. COPD D2 10uM" = "#0f3024"
+) 
+
+
+treatmentColors <- c(
+  "Control" = "#F9D576",
+  "3uM" = "#F57634",
+  "10uM" = "#A01813"
+)
+```
+
+
+# Loading Previous Seurat Object
+
+```{r}
+all_integrated_anno <- readRDS("../data/all_integrated_anno_final.rds")
+```
+
+```{r,fig.width=10, fig.height=7}
+Idents(all_integrated_anno) <- "seurat_clusters"
+all_integrated_anno <- RenameIdents(all_integrated_anno, 
+                              "0" = "Ciliated", 
+                              "1" = "Ciliated", 
+                              "2" = "Club",
+                              "3" = "Ciliated",
+                              "4" = "Club", 
+                              "5" = "Basal", 
+                              "6" = "Unknown (Transitional)" , 
+                              "7" = "Basal-Club Transitional",
+                              "8" = "Ciliated (Stressed)", 
+                              "9" = "Club",  
+                              "10" = "Ciliated", 
+                              "11" = "Ionocyte",
+                              "12" = "Ciliated",
+                              "13" = "Goblet",
+                              "14" = "Proliferating Basal",
+                              "15" = "Proliferating + Ciliated", 
+                              "16" = "Tuft", 
+                              "17" = "Ciliated"
+                              ) 
+
+all_dim <- DimPlot(all_integrated_anno,cols = cellColors ) + ggtitle("Annotated UMAP of All Libraries")
+all_dim
+
+short_names <- c(
+  "Ciliated" = "1. Ciliated", 
+  "Club" = "2. Club",
+  "Basal" = "3. Basal",
+  "Unknown (Transitional)" = "4. Unknown (Transitional)",
+  "Basal-Club Transitional" = "5. Basal-Club Transitional", 
+  "Ciliated (Stressed)" = "6. Ciliated (Stressed)",
+  "Ionocyte" = "7. Ionocyte",
+  "Goblet" = "8. Goblet",
+  "Proliferating Basal" = "9. Proliferating Basal",
+  "Proliferating + Ciliated" = "10. Proliferating + Ciliated",
+  "Tuft" = "11. Tuft"
+)
+new_cellColors <- cellColors
+names(new_cellColors) <- short_names[names(cellColors)]
+all_integrated_anno <- RenameIdents(all_integrated_anno, short_names)
+
+all_dim <- DimPlot(all_integrated_anno,cols = new_cellColors )
+all_dim
+```
+
+```{r}
+ggsave(
+  "../fig/all_umap.pdf",
+  plot = all_dim,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 8,
+  height = 5,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+```{r}
+
+all_integrated_anno2$treatment <- recode(all_integrated_anno2$treatment, "Control" = "Control", "3uM" = "NTCU 3 μM", "10uM" = "NTCU 10 μM")
+split_all <- DimPlot(all_integrated_anno, cols = cellColors, split.by = "treatment", ncol = 1) +NoLegend() 
+split_all
+```
+```{r}
+ggsave(
+  "../fig/all_split.pdf",
+  plot = split_all,
+  device = cairo_pdf,
+  path = NULL,
+  scale = 1,
+  width = 6,
+  height = 14,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+
+# Squamous Cell Injury: SOX9, SOX2, PI3K
+
+
+## Discussion
+
+
+
+### Sex Determination
+
+SOX9 expression is highly sex-linked. Transcription of SOX9 is activated by SRY (testis determining factor, a Y-chr product) [@liSexdeterminingFactorsSRY2014]. Hence we analyse only male-derived samples when focusing on SOX9. However, SOX9 is not a Y-chr chromosome gene, and is nonetheless important in aspects of female development.
+
+### Cell Types 
+
+SOX9 is most highly expressed in unknown (transitional), BC club and tuft cells. SOX9 expression appears positively associated with increased NTCU concentration in the basal-related cells, including the unknown cluster (possibly an aberrant basal cell population), BC club, basal and proliferating basal cells, but not in tuft cells.
+
+* SOX9 is a known marker of tuft cells [@mckinleyOptimizedMultiplexImmunofluorescence2017] [@liCriticalRolesTherapeutic2022]. 
+* Yuan et al. [@yuanDiagnosticPrognosticSignificances2021] find that SOX9 is positively associated with POU2F3 and TRPM5 expression in tuft cells, and may have a role in immune dysregulation accompanying the development of thymoma.
+* SOX9 plays a role in development of glioma [@swartlingCyclicGMPdependentProtein2009] and and colorectal cancers [@luAnalysisSOX9Expression2008].
+
+
+## Feature Plots
+
+```{r, fig.width = 14, fig.height = 12}
+DefaultAssay(all_integrated_anno) <- "RNA"
+FeaturePlot(all_integrated_anno, features = c("SOX9", "SOX2", "PIK3CA"))
+```
+```{r}
+sox92plot <- FeaturePlot(all_integrated_anno, features  = c("SOX9", "SOX2"), ncol = 1)
+sox92plot
+
+ggsave(
+  "../fig/sox92.pdf",
+  plot = sox92plot,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 6,
+  height = 10,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+
+```{r, fig.width = 18, fig.height = 16}
+DefaultAssay(all_integrated_anno) <- "RNA"
+FeaturePlot(all_integrated_anno, features = c("SOX9", "SOX2", "PIK3CA"), split.by = "treatment")
+```
+
+
+## Violin Plots
+
+### Cell Type
+
+
+```{r, fig.width = 12, fig.height = 14}
+DefaultAssay(all_integrated_anno) <-  "RNA"
+VlnPlot(all_integrated_anno, features = c("SOX9", "SOX2", "PIK3CA"), pt.size = 0, cols = cellColors, ncol = 2)
+```
+
+### Split by Treatment
+
+When split by treatment, SOX9 expression is more clear in 10 uM NTCU treated ciliated, basal, ionocyte, and proliferating basal cells.
+
+```{r, fig.width = 12, fig.height = 20}
+
+VlnPlot(all_integrated_anno, features = c("SOX9","SOX2", "PIK3CA"), pt.size = 0, ncol = 1, cols = treatmentColors, split.by = "treatment") + theme(legend.position = "left") + scale_fill_manual(values = treatmentColors)
+```
+
+### Group by Treatment
+
+```{r, fig.height = 18, fig.width = 8}
+VlnPlot(all_integrated_anno, features = c("SOX9","SOX2", "PIK3CA"), pt.size = 0, ncol = 1, group.by = "treatment", cols = treatmentColors) 
+```
+
+
+### Group by Sample Type
+
+Higher expression of SOX9 in samples derived from male patients (HBEC D1 and COPD D1) as opposed to the female patient (COPD D2).
+
+```{r, fig.height = 22, fig.width = 12}
+VlnPlot(all_integrated_anno, features = c("SOX9","SOX2", "PIK3CA"), pt.size = 0, ncol = 1, group.by = "sampleType", cols = sampleColors) + theme(legend.position = "left")
+```
+
+
+# DE and GSEA
+
+## Functions
+
+### KEGG GSEA
+
+```{r}
+kegg_gsea <- function(markers_obj,
+                             cluster = "10uM",  # Optional cluster filter
+                             organism = "hsa",
+                             pvalueCutoff = 0.05,
+                             pAdjustMethod = "BH") {
+  
+  # Load required packages
+  require(clusterProfiler)
+  require(org.Hs.eg.db)
+  require(tidyverse)
+  
+  # 1. Detect input type and standardize format
+  if ("gene" %in% colnames(markers_obj)) {
+    # FindAllMarkers format
+    working_df <- markers_obj %>%
+      dplyr::rename(gene_symbol = gene)
+  } else {
+    # FindMarkers format (genes in rownames)
+    working_df <- markers_obj %>%
+      tibble::rownames_to_column(var = "gene_symbol")
+  }
+  
+  # 2. Optional cluster filtering
+  if (!is.null(cluster) && ("cluster" %in% colnames(working_df))) {
+    working_df <- working_df %>%
+      dplyr::filter(cluster == !!cluster)
+  } else if (!is.null(cluster)) {
+    warning("Cluster specified but no 'cluster' column found - proceeding without filtering")
+  }
+  
+  # 3. Prepare ranked gene list
+  working_df <- working_df %>%
+    arrange(desc(avg_log2FC))
+  
+  gene_list <- working_df$avg_log2FC
+  names(gene_list) <- working_df$gene_symbol
+  
+  # 4. Convert gene symbols to Entrez IDs
+  entrez_ids <- working_df %>%
+    dplyr::select(gene_symbol) %>%
+    distinct() %>%
+    mutate(entrez = mapIds(org.Hs.eg.db,
+                          keys = gene_symbol,
+                          column = "ENTREZID",
+                          keytype = "SYMBOL",
+                          multiVals = "first")) %>%
+    filter(!is.na(entrez))
+  
+  # Filter gene list to only mapped genes
+  kegg_gene_list <- gene_list[names(gene_list) %in% entrez_ids$gene_symbol]
+  names(kegg_gene_list) <- entrez_ids$entrez[match(names(kegg_gene_list), entrez_ids$gene_symbol)]
+  
+  # 5. Run KEGG analysis
+  if (length(kegg_gene_list) < 10) {
+    stop("Insufficient genes with Entrez mappings (need ≥10). Check gene symbols.")
+  }
+  
+  kegg_results <- gseKEGG(
+    geneList = sort(kegg_gene_list, decreasing = TRUE),
+    organism = organism,
+    pvalueCutoff = pvalueCutoff,
+    pAdjustMethod = pAdjustMethod,
+    minGSSize = 10,
+    maxGSSize = 500,
+    verbose = FALSE,
+    seed = TRUE
+  )
+  
+  return(kegg_results)
+}
+```
+
+### MSigDB GSEA
+
+```{r}
+msigdb_gsea <- function(markers_obj, 
+                    category = "H", 
+                    cluster = "10uM",
+                    pvalueCutoff = 0.05,
+                    pAdjustMethod = "BH") {
+  
+  # Load required packages
+  require(clusterProfiler)
+  require(org.Hs.eg.db)
+  require(msigdbr)
+  require(tidyverse)
+  
+  # 1. Detect input type and standardize format
+  if ("gene" %in% colnames(markers_obj)) {
+    # FindAllMarkers format (gene column exists)
+    working_df <- markers_obj %>%
+      dplyr::rename(gene_symbol = gene)
+  } else {
+    # FindMarkers format (genes in rownames)
+    working_df <- markers_obj %>%
+      tibble::rownames_to_column(var = "gene_symbol")
+  }
+  
+  # 2. Apply cluster filtering if cluster column exists
+  if ("cluster" %in% colnames(working_df)) {
+    working_df <- working_df %>%
+      dplyr::filter(cluster == !!cluster)
+  }
+  
+  # 3. Prepare ranked gene list
+  working_df <- working_df %>%
+    arrange(desc(avg_log2FC))
+  
+  gene_list <- working_df$avg_log2FC
+  names(gene_list) <- working_df$gene_symbol
+  
+  # 4. Convert gene symbols to Entrez IDs
+  entrez_ids <- working_df %>%
+    dplyr::select(gene_symbol) %>%
+    distinct() %>%
+    mutate(entrez = mapIds(org.Hs.eg.db,
+                          keys = gene_symbol,
+                          column = "ENTREZID",
+                          keytype = "SYMBOL",
+                          multiVals = "first")) %>%
+    filter(!is.na(entrez))
+  
+  # Filter and rename the gene list
+  gene_list <- gene_list[names(gene_list) %in% entrez_ids$gene_symbol]
+  names(gene_list) <- entrez_ids$entrez[match(names(gene_list), entrez_ids$gene_symbol)]
+  
+  # 5. Get gene sets
+  msig_df <- msigdbr(species = "Homo sapiens", category = category)
+  term2gene <- msig_df %>% dplyr::select(gs_name, entrez_gene)
+  
+  # 6. Run GSEA
+  gsea_results <- GSEA(
+    geneList = gene_list,
+    TERM2GENE = term2gene,
+    pvalueCutoff = pvalueCutoff,
+    pAdjustMethod = pAdjustMethod,
+    minGSSize = 10,
+    maxGSSize = 500,
+    seed = TRUE,
+    by = "fgsea"
+  )
+  
+  return(gsea_results)
+}
+```
+
+
+### Reactome
+
+```{r}
+reactome_gsea <- function(markers_obj,
+                         cluster = "10uM",
+                         organism = "human",
+                         pvalueCutoff = 0.05,
+                         pAdjustMethod = "BH") {
+  
+  # Load required packages
+  require(ReactomePA)
+  require(clusterProfiler)
+  require(org.Hs.eg.db)
+  require(tidyverse)
+  
+  # 1. Detect input type and standardize format
+  if ("gene" %in% colnames(markers_obj)) {
+    working_df <- markers_obj %>%
+      dplyr::rename(gene_symbol = gene)
+  } else {
+    working_df <- markers_obj %>%
+      tibble::rownames_to_column(var = "gene_symbol")
+  }
+  
+  # 2. Optional cluster filtering
+  if (!is.null(cluster) && ("cluster" %in% colnames(working_df))) {
+    working_df <- working_df %>%
+      dplyr::filter(cluster == !!cluster)
+  } else if (!is.null(cluster)) {
+    warning("Cluster specified but no 'cluster' column found - proceeding without filtering")
+  }
+  
+  # 3. Handle duplicate genes by averaging their log2FC values
+  working_df <- working_df %>%
+    group_by(gene_symbol) %>%
+    summarise(avg_log2FC = mean(avg_log2FC, na.rm = TRUE)) %>%
+    arrange(desc(avg_log2FC))
+  
+  gene_list <- working_df$avg_log2FC
+  names(gene_list) <- working_df$gene_symbol
+  
+  # 4. Convert gene symbols to Entrez IDs
+  entrez_ids <- working_df %>%
+    dplyr::select(gene_symbol) %>%
+    distinct() %>%
+    mutate(entrez = mapIds(org.Hs.eg.db,
+                          keys = gene_symbol,
+                          column = "ENTREZID",
+                          keytype = "SYMBOL",
+                          multiVals = "first")) %>%
+    filter(!is.na(entrez))
+  
+  # Filter gene list to only mapped genes
+  reactome_gene_list <- gene_list[names(gene_list) %in% entrez_ids$gene_symbol]
+  names(reactome_gene_list) <- entrez_ids$entrez[match(names(reactome_gene_list), entrez_ids$gene_symbol)]
+  
+  # Remove any remaining duplicates (just in case)
+  reactome_gene_list <- reactome_gene_list[!duplicated(names(reactome_gene_list))]
+  
+  # 5. Run Reactome analysis
+  if (length(reactome_gene_list) < 10) {
+    stop("Insufficient genes with Entrez mappings (need ≥10). Check gene symbols.")
+  }
+  
+  reactome_results <- gsePathway(
+    geneList = sort(reactome_gene_list, decreasing = TRUE),
+    organism = organism,
+    pvalueCutoff = pvalueCutoff,
+    pAdjustMethod = pAdjustMethod,
+    minGSSize = 10,
+    maxGSSize = 500,
+    verbose = FALSE
+  )
+  
+  return(reactome_results)
+}
+```
+
+
+## All Cell Types
+
+```{r}
+Idents(all_integrated_anno) <- "treatment"
+
+DefaultAssay(all_integrated_anno) <- "RNA"
+
+
+if(file.exists("../data/treatment_markers_all.rds")){
+  
+  treatment_markers_all <- readRDS("../data/treatment_markers_all.rds")
+
+  }else{
+    treatment_markers_all <- FindAllMarkers(all_integrated_anno, logfc.threshold = 0, min.diff.pct = -Inf, min.diff=0, test.use = 'wilcox')
+    
+    saveRDS(treatment_markers_all, "../data/treatment_markers_all.rds")
+  }
+
+if(file.exists("../data/treatment_markers_all_10_vs_ctrl.rds")){
+  
+  treatment_markers_all_10_vs_ctrl <- readRDS("../data/treatment_markers_all_10_vs_ctrl.rds")
+
+  }else{
+    treatment_markers_10_vs_ctrl <- FindMarkers(all_integrated_anno, ident.1 = "10uM", ident.2 = "Control",logfc.threshold = 0, min.diff.pct = -Inf, min.diff=0, test.use = 'wilcox')
+    
+    saveRDS(treatment_markers_10_vs_ctrl, "../data/treatment_markers_all_10_vs_ctrl.rds")
+  }
+```
+
+
+```{r}
+DT::datatable(treatment_markers_all)
+```
+```{r}
+Idents(all_integrated_anno) <- "cellType"
+trans_markers <- FindMarkers(all_integrated_anno, ident.1 = "Unknown (Transitional)", only.pos = TRUE)
+DT::datatable(trans_markers)
+
+# Assuming `markers` is your FindMarkers result
+top10_positive <- trans_markers[order(trans_markers$avg_log2FC, decreasing = TRUE), ][1:10, ]
+top10_positive
+```
+```{r, fig.width = 29}
+EnhancedVolcano(
+    trans_markers, 
+    lab = rownames(trans_markers),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment',
+    subtitle = 'Comparison against all other treatments - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+```
+```{r}
+dotplot(msigdb_gsea(trans_markers))
+```
+
+### DE Analysis
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    treatment_markers_all %>% filter(cluster == "10uM"),
+    lab = rownames(treatment_markers_all %>% filter(cluster == "10uM")),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 0.5,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment',
+    subtitle = 'Comparison against all other treatments - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(treatment_markers_all %>% filter(cluster == "10uM"))
+```
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    treatment_markers_all_10_vs_ctrl,
+    lab = rownames(treatment_markers_all_10_vs_ctrl),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment',
+    subtitle = 'Comparison against control - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(treatment_markers_all_10_vs_ctrl)
+```
+
+### GSEA
+
+#### KEGG
+
+```{r, fig.height = 6}
+kegg_all1 <- kegg_gsea(treatment_markers_all)
+kegg_all2 <- kegg_gsea(treatment_markers_all_10_vs_ctrl)
+dotplot(kegg_all1)
+dotplot(kegg_all2)
+```
+
+#### MSigDB
+
+```{r, fig.height = 6}
+msigdb_all1 <- msigdb_gsea(treatment_markers_all)
+msigdb_all2 <- msigdb_gsea(treatment_markers_all_10_vs_ctrl)
+dotplot(msigdb_all1)
+dotplot(msigdb_all2)
+```
+
+
+
+#### Reactome
+
+```{r, fig.height = 6}
+reactome_all1 <- reactome_gsea(treatment_markers_all)
+reactome_all2 <- reactome_gsea(treatment_markers_all_10_vs_ctrl)
+dotplot(reactome_all1)
+dotplot(reactome_all2)
+```
+
+
+## Basal Cells
+
+```{r}
+basal_obj <- subset(all_integrated_anno, subset = cellType == "Basal")
+```
+
+
+```{r}
+if(file.exists("../data/basal_10_vs_ctrl.rds")){
+  
+  basal_10_vs_ctrl <- readRDS("../data/basal_10_vs_ctrl.rds")
+
+  }else{
+  basal_10_vs_ctrl <- FindMarkers(basal_obj, ident.1 = "10uM", ident.2 = "Control", 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(basal_10_vs_ctrl, "../data/basal_10_vs_ctrl.rds")
+  }
+
+if(file.exists("../data/basal_all_markers.rds")){
+  
+  basal_all_markers <- readRDS("../data/basal_all_markers.rds")
+
+  }else{
+  basal_all_markers <- FindAllMarkers(basal_obj, 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(basal_all_markers, "../data/basal_all_markers.rds")
+ }
+```
+
+
+### DE Analysis
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    basal_all_markers %>% filter(cluster == "10uM"),
+    lab = rownames(basal_all_markers %>% filter(cluster == "10uM")),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Basal Cells',
+    subtitle = 'Comparison against all other treatments - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(basal_all_markers %>% filter(cluster == "10uM"))
+```
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    basal_10_vs_ctrl,
+    lab = rownames(basal_10_vs_ctrl),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Basal Cells',
+    subtitle = 'Comparison against control - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(basal_10_vs_ctrl)
+```
+
+### GSEA
+
+#### KEGG
+
+
+```{r, fig.height = 6}
+kegg_basal1 <- kegg_gsea(basal_10_vs_ctrl)
+kegg_basal2 <- kegg_gsea(basal_all_markers)
+dotplot(kegg_basal1)
+dotplot(kegg_basal2)
+```
+
+
+#### MSigDB
+
+```{r, fig.height = 6}
+msigdb_basal1 <- msigdb_gsea(basal_10_vs_ctrl)
+msigdb_basal2 <- msigdb_gsea(basal_all_markers)
+dotplot(msigdb_basal1)
+dotplot(msigdb_basal2)
+```
+
+#### Reactome
+
+```{r, fig.height = 6}
+reactome_basal1 <- reactome_gsea(basal_10_vs_ctrl)
+reactome_basal2 <- reactome_gsea(basal_all_markers)
+dotplot(reactome_basal1)
+dotplot(reactome_basal2)
+```
+
+
+## Proliferating Basal Cells
+
+```{r}
+prof_obj <- subset(all_integrated_anno, subset = cellType == "Basal")
+```
+
+
+```{r}
+if(file.exists("../data/prof_10_vs_ctrl.rds")){
+  
+  prof_10_vs_ctrl <- readRDS("../data/prof_10_vs_ctrl.rds")
+
+  }else{
+  prof_10_vs_ctrl <- FindMarkers(prof_obj, ident.1 = "10uM", ident.2 = "Control", 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(prof_10_vs_ctrl, "../data/prof_10_vs_ctrl.rds")
+  }
+
+if(file.exists("../data/prof_all_markers.rds")){
+  
+  prof_all_markers <- readRDS("../data/prof_all_markers.rds")
+
+  }else{
+  prof_all_markers <- FindAllMarkers(prof_obj, 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(prof_all_markers, "../data/prof_all_markers.rds")
+ }
+```
+
+```{r}
+markers <-basal_10_vs_ctrl
+# Assuming your FindMarkers result is in a data frame called `markers`
+sig_pos <- subset(markers, avg_log2FC > 1 & p_val_adj < 0.05)
+sig_neg <- subset(markers, avg_log2FC < -1 & p_val_adj < 0.05)
+
+num_sig_pos <- nrow(sig_pos)
+num_sig_neg <- nrow(sig_neg)
+total_tested <- nrow(markers)
+proportion <- (num_sig_pos + num_sig_neg) / total_tested
+
+cat("Positive markers:", num_sig_pos, "\n")
+cat("Negative markers:", num_sig_neg, "\n")
+cat("Total genes tested:", total_tested, "\n")
+cat("Proportion of significant markers:", round(proportion, 3), "\n")
+
+```
+
+
+### DE Analysis
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    prof_all_markers %>% filter(cluster == "10uM"),
+    lab = rownames(prof_all_markers %>% filter(cluster == "10uM")),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Proliferating Basal Cells',
+    subtitle = 'Comparison against all other treatments - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(prof_all_markers %>% filter(cluster == "10uM"))
+```
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    prof_10_vs_ctrl,
+    lab = rownames(prof_10_vs_ctrl),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Proliferating Basal Cells',
+    subtitle = 'Comparison against control - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(prof_10_vs_ctrl)
+```
+
+### GSEA
+
+#### KEGG
+
+
+```{r, fig.height = 6}
+kegg_prof1 <- kegg_gsea(prof_10_vs_ctrl)
+kegg_prof2 <- kegg_gsea(prof_all_markers)
+dotplot(kegg_prof1)
+dotplot(kegg_prof2)
+```
+
+#### MSigDB
+
+```{r, fig.height = 6}
+msigdb_prof1 <- msigdb_gsea(prof_10_vs_ctrl)
+msigdb_prof2 <- msigdb_gsea(prof_all_markers)
+dotplot(msigdb_prof1)
+dotplot(msigdb_prof2)
+```
+
+#### Reactome
+
+```{r, fig.height = 6}
+reactome_prof1 <- reactome_gsea(prof_10_vs_ctrl)
+reactome_prof2 <- reactome_gsea(prof_all_markers)
+dotplot(reactome_prof1)
+dotplot(reactome_prof2)
+```
+
+
+## Unknown (Transitional)
+
+```{r}
+transitional_obj <- subset(all_integrated_anno, subset = cellType == "Unknown (Transitional)")
+```
+
+
+```{r}
+if(file.exists("../data/transitional_10_vs_ctrl.rds")){
+  
+  transitional_10_vs_ctrl <- readRDS("../data/transitional_10_vs_ctrl.rds")
+
+  }else{
+  transitional_10_vs_ctrl <- FindMarkers(transitional_obj, ident.1 = "10uM", ident.2 = "Control", 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(transitional_10_vs_ctrl, "../data/transitional_10_vs_ctrl.rds")
+  }
+
+if(file.exists("../data/transitional_all_markers.rds")){
+  
+  transitional_all_markers <- readRDS("../data/transitional_all_markers.rds")
+
+  }else{
+  transitional_all_markers <- FindAllMarkers(transitional_obj, 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(transitional_all_markers, "../data/transitional_all_markers.rds")
+ }
+```
+
+
+### DE Analysis
+
+```{r, fig.height = 8, fig.width = 10}
+transitional_volc <- EnhancedVolcano(
+    transitional_all_markers %>% filter(cluster == "10uM"),
+    lab = rownames(transitional_all_markers %>% filter(cluster == "10uM")),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Unknown (Transitional) Cells',
+    subtitle = 'Comparison against all other treatments - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(transitional_all_markers %>% filter(cluster == "10uM"))
+```
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    transitional_10_vs_ctrl,
+    lab = rownames(transitional_10_vs_ctrl),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Unknown (Transitional) Cells',
+    subtitle = 'Comparison against control - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(transitional_10_vs_ctrl)
+```
+
+### GSEA
+
+#### KEGG
+
+
+```{r, fig.height = 6}
+kegg_transitional1 <- kegg_gsea(transitional_10_vs_ctrl)
+kegg_transitional2 <- kegg_gsea(transitional_all_markers)
+dotplot(kegg_transitional1)
+dotplot(kegg_transitional2)
+```
+
+#### MSigDB
+
+```{r, fig.height = 6}
+msigdb_transitional1 <- msigdb_gsea(transitional_10_vs_ctrl)
+msigdb_transitional2 <- msigdb_gsea(transitional_all_markers)
+dotplot(msigdb_transitional1)
+dotplot(msigdb_transitional2)
+```
+
+```{r, fig.height = 8, fig.width = 10}
+
+# Filter for absolute log2FC > 1.5
+filtered_markers <- basal_10_vs_ctrl[abs(basal_10_vs_ctrl$avg_log2FC) > 1.3, ]
+gene_names <- rownames(filtered_markers)
+
+trans_volc <- EnhancedVolcano(
+    transitional_10_vs_ctrl,
+    lab = rownames(transitional_10_vs_ctrl),
+    boxedLabels = TRUE,
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = '',
+    subtitle = '',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+basal_volc
+
+ggsave(
+  "../fig/trans_volc.pdf",
+  plot = trans_volc,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 12,
+  height = 10,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+```{r}
+ggsave(
+  "../fig/msigdb_trans.pdf",
+  plot = dotplot(msigdb_transitional2),
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 9,
+  height = 4.5,
+  units = c("in", "cm", "mm", "px"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+  create.dir = FALSE
+)
+```
+
+
+#### Reactome
+
+```{r, fig.height = 6}
+reactome_transitional1 <- reactome_gsea(transitional_10_vs_ctrl)
+reactome_transitional2 <- reactome_gsea(transitional_all_markers)
+dotplot(reactome_transitional1)
+dotplot(reactome_transitional2)
+```
+
+## Club
+
+```{r}
+club_obj <- subset(all_integrated_anno, subset = cellType == "Club")
+```
+
+```{r}
+if(file.exists("../data/club_10_vs_ctrl.rds")){
+  
+  club_10_vs_ctrl <- readRDS("../data/club_10_vs_ctrl.rds")
+
+  }else{
+  club_10_vs_ctrl <- FindMarkers(club_obj, ident.1 = "10uM", ident.2 = "Control", 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(club_10_vs_ctrl, "../data/club_10_vs_ctrl.rds")
+  }
+
+if(file.exists("../data/club_all_markers.rds")){
+  
+  club_all_markers <- readRDS("../data/club_all_markers.rds")
+
+  }else{
+  club_all_markers <- FindAllMarkers(club_obj, 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(club_all_markers, "../data/club_all_markers.rds")
+ }
+```
+
+### DE Analysis
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    club_all_markers %>% filter(cluster == "10uM"),
+    lab = rownames(club_all_markers %>% filter(cluster == "10uM")),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Club Cells',
+    subtitle = 'Comparison against all other treatments - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(club_all_markers %>% filter(cluster == "10uM"))
+```
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    club_10_vs_ctrl,
+    lab = rownames(club_10_vs_ctrl),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Club Cells',
+    subtitle = 'Comparison against control - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(club_10_vs_ctrl)
+```
+
+### GSEA
+
+#### KEGG
+
+
+```{r, fig.height = 6}
+kegg_club1 <- kegg_gsea(club_10_vs_ctrl)
+kegg_club2 <- kegg_gsea(club_all_markers)
+dotplot(kegg_club1)
+dotplot(kegg_club2)
+```
+
+#### MSigDB
+
+```{r, fig.height = 6}
+msigdb_club1 <- msigdb_gsea(club_10_vs_ctrl)
+msigdb_club2 <- msigdb_gsea(club_all_markers)
+dotplot(msigdb_club1)
+dotplot(msigdb_club2)
+```
+
+#### Reactome
+
+```{r, fig.height = 6}
+reactome_club1 <- reactome_gsea(club_10_vs_ctrl)
+reactome_club2 <- reactome_gsea(club_all_markers)
+dotplot(reactome_club1)
+dotplot(reactome_club2)
+```
+
+## Basal Club Transitional
+
+```{r}
+bc_obj <- subset(all_integrated_anno, subset = cellType == "Basal Club Transitional")
+```
+
+
+```{r}
+if(file.exists("../data/bc_10_vs_ctrl.rds")){
+  
+  bc_10_vs_ctrl <- readRDS("../data/bc_10_vs_ctrl.rds")
+
+  }else{
+  bc_10_vs_ctrl <- FindMarkers(bc_obj, ident.1 = "10uM", ident.2 = "Control", 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(bc_10_vs_ctrl, "../data/bc_10_vs_ctrl.rds")
+  }
+
+if(file.exists("../data/bc_all_markers.rds")){
+  
+  bc_all_markers <- readRDS("../data/bc_all_markers.rds")
+
+  }else{
+  bc_all_markers <- FindAllMarkers(bc_obj, 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(bc_all_markers, "../data/bc_all_markers.rds")
+ }
+```
+
+### DE Analysis
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    bc_all_markers %>% filter(cluster == "10uM"),
+    lab = rownames(bc_all_markers %>% filter(cluster == "10uM")),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Basal/Club Cells',
+    subtitle = 'Comparison against all other treatments - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(bc_all_markers %>% filter(cluster == "10uM"))
+```
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    bc_10_vs_ctrl,
+    lab = rownames(bc_10_vs_ctrl),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 1,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Basal/Club Cells',
+    subtitle = 'Comparison against control - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(bc_10_vs_ctrl)
+```
+
+### GSEA
+
+#### KEGG
+
+
+```{r, fig.height = 6}
+kegg_bc1 <- kegg_gsea(bc_10_vs_ctrl)
+kegg_bc2 <- kegg_gsea(bc_all_markers)
+dotplot(kegg_bc1)
+dotplot(kegg_bc2)
+```
+
+#### MSigDB
+
+```{r, fig.height = 6}
+msigdb_bc1 <- msigdb_gsea(bc_10_vs_ctrl)
+msigdb_bc2 <- msigdb_gsea(bc_all_markers)
+dotplot(msigdb_bc1)
+dotplot(msigdb_bc2)
+```
+
+#### Reactome
+
+```{r, fig.height = 6}
+reactome_bc1 <- reactome_gsea(bc_10_vs_ctrl)
+reactome_bc2 <- reactome_gsea(bc_all_markers)
+dotplot(reactome_bc1)
+dotplot(reactome_bc2)
+```
+
+## Ciliated
+
+```{r}
+ciliated_obj <- subset(all_integrated_anno, subset = cellType == "Ciliated")
+```
+
+
+```{r}
+if(file.exists("../data/ciliated_10_vs_ctrl.rds")){
+  
+  ciliated_10_vs_ctrl <- readRDS("../data/ciliated_10_vs_ctrl.rds")
+
+  }else{
+  ciliated_10_vs_ctrl <- FindMarkers(ciliated_obj, ident.1 = "10uM", ident.2 = "Control", 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(ciliated_10_vs_ctrl, "../data/ciliated_10_vs_ctrl.rds")
+  }
+
+if(file.exists("../data/ciliated_all_markers.rds")){
+  
+  ciliated_all_markers <- readRDS("../data/ciliated_all_markers.rds")
+
+  }else{
+  ciliated_all_markers <- FindAllMarkers(ciliated_obj, 
+                       logfc.threshold = 0, 
+                       min.pct = 0, 
+                       min.diff.pct = -Inf, 
+                       test.use = "wilcox")
+    
+    saveRDS(ciliated_all_markers, "../data/ciliated_all_markers.rds")
+ }
+```
+
+### DE Analysis
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    ciliated_all_markers %>% filter(cluster == "10uM"),
+    lab = rownames(ciliated_all_markers %>% filter(cluster == "10uM")),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 0.5,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Ciliated Cells',
+    subtitle = 'Comparison against all other treatments - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(ciliated_all_markers %>% filter(cluster == "10uM"))
+```
+
+```{r, fig.height = 8, fig.width = 10}
+EnhancedVolcano(
+    ciliated_10_vs_ctrl,
+    lab = rownames(ciliated_10_vs_ctrl),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 0.05,  # Significance threshold
+    FCcutoff = 0.5,  # Fold change threshold
+    title = 'Differentially Expressed Genes for 10uM Treatment in Ciliated Cells',
+    subtitle = 'Comparison against control - positive logFC denotes upregulation in 10uM samples',
+    pointSize = 3.0,
+    labSize = 4.0,
+    colAlpha = 0.8,
+    legendPosition = 'top',
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    xlim = c(-2, 2)
+)
+
+DT::datatable(ciliated_10_vs_ctrl)
+```
+
+### GSEA
+
+#### KEGG
+
+
+```{r, fig.height = 6}
+kegg_ciliated1 <- kegg_gsea(ciliated_10_vs_ctrl)
+kegg_ciliated2 <- kegg_gsea(ciliated_all_markers)
+dotplot(kegg_ciliated1)
+dotplot(kegg_ciliated2)
+```
+
+#### MSigDB
+
+```{r, fig.height = 6}
+msigdb_ciliated1 <- msigdb_gsea(ciliated_10_vs_ctrl)
+msigdb_ciliated2 <- msigdb_gsea(ciliated_all_markers)
+dotplot(msigdb_ciliated1)
+dotplot(msigdb_ciliated2)
+```
+
+#### Reactome
+
+```{r, fig.height = 6}
+reactome_ciliated1 <- reactome_gsea(ciliated_10_vs_ctrl)
+reactome_ciliated2 <- reactome_gsea(ciliated_all_markers)
+dotplot(reactome_ciliated1)
+dotplot(reactome_ciliated2)
+```
+
+# Proliferation Markers Feature Plots
+
+```{r, fig.width = 15, fig.height = 21}
+FeaturePlot(all_integrated_anno, features = c("SOX9", "CST6", "VIM", "MKI67", "EGFR", "CCNB2", "RFC4", "TYMS", "UBE2S", "RFC4", "BIRC5", "GAPDH", "CKS1B", "MCM6", "EZH2", "PTTG1", "CDK5", "TPX2", "PRC1", "CKS2", "CDC45", "KPNA2", "NCAPG", "UBE2S"))
+```
+
+```{r, fig.width = 10, fig.height = 20}
+FeaturePlot(all_integrated_anno, features = c("CCNE1", "CCND1", "CCNB1", "PLK1", "BUB1", "MYBL2", "MKI67", "FOXM1", "STK6", "E2F1"), ncol = 2)
+```
+
+# References

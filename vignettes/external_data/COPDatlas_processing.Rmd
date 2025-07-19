@@ -1,0 +1,76 @@
+---
+title: "COPDatlas"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(Matrix)
+library(dplyr)
+```
+# Load Counts 
+
+```{r}
+# Read Matrix Market format
+counts <- readMM("/data/jx303/COPDatlas/GSE136831_RawCounts_Sparse.mtx")
+```
+
+```{r}
+genes <- read.delim("/data/jx303/COPDatlas/GSE136831_AllCells.GeneIDs.txt", header = TRUE, stringsAsFactors = FALSE)
+rownames(counts) <- genes[[2]]  # or genes[[1]]
+```
+
+```{r}
+colnames(counts) <- barcodes$V1
+```
+
+# Process Seurat Object
+
+```{r}
+copdatlas_obj <- CreateSeuratObject(counts = counts, project = "GSE136831", min.cells = 3, min.features = 200)
+```
+
+```{r}
+copdatlas_obj <- NormalizeData(copdatlas_obj, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+```{r}
+copdatlas_obj[["percent.mt"]] <- PercentageFeatureSet(copdatlas_obj, pattern = "^MT-")
+VlnPlot(copdatlas_obj, features = "percent.mt", pt.size = 0)
+```
+
+```{r}
+copdatlas_obj <- FindVariableFeatures(copdatlas_obj, selection.method = "vst", nfeatures = 2000)
+copdatlas_obj <- ScaleData(copdatlas_obj, features = VariableFeatures(copdatlas_obj), vars.to.regress = "percent.mt")
+```
+
+```{r}
+copdatlas_obj <- RunPCA(copdatlas_obj, features = VariableFeatures(copdatlas_obj))
+ElbowPlot(copdatlas_obj)
+```
+
+```{r}
+copdatlas_obj <- RunUMAP(copdatlas_obj, dims = 1:20)
+```
+# Add Metadata
+
+```{r}
+metadata <- read.delim("/data/jx303/COPDatlas/GSE136831_AllCells.Samples.CellType.MetadataTable.txt", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+rownames(metadata) <- metadata$CellBarcode_Identity
+metadata <- metadata[colnames(copdatlas_obj), ]
+copdatlas_obj <- AddMetaData(copdatlas_obj, metadata)
+```
+
+
+```{r}
+# UMAP colored by broad cell type category
+DimPlot(copdatlas_obj, group.by = "CellType_Category", label = TRUE, raster = FALSE)
+
+# UMAP colored by fine cell type
+DimPlot(copdatlas_obj, group.by = "Subclass_Cell_Identity", label = TRUE, raster = FALSE)
+```
+```{r}
+saveRDS(copdatlas_obj, file = "/data/jx303/copdatlas_obj.Rds")
+
+```
+

@@ -71,6 +71,5 @@ DimPlot(copdatlas_obj, group.by = "Subclass_Cell_Identity", label = TRUE, raster
 ```
 ```{r}
 saveRDS(copdatlas_obj, file = "/data/jx303/copdatlas_obj.Rds")
-
 ```
 

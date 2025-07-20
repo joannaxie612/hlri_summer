@@ -3,3 +3,162 @@ title: "COPDatlas_analysis"
 output: html_document
 ---
 
+```{r}
+library(Seurat)
+library(EnhancedVolcano)
+library(DT)
+library(readxl)
+```
+
+# Load and Plot Object
+
+```{r}
+copdatlas_obj <- readRDS("/data/jx303/external_data/COPDatlas/copdatlas_obj.Rds")
+```
+d
+```{r, fig.width = 15}
+DimPlot(copdatlas_obj, group.by = "Manuscript_Identity", label = TRUE, raster = TRUE)
+```
+
+```{r}
+unique(copdatlas_obj$Subclass_Cell_Identity)
+```
+
+```{r}
+unique(copdatlas_obj$Manuscript_Identity)
+```
+
+# Club and Goblet DE Analysis
+
+```{r}
+club_goblet_obj <- subset(copdatlas_obj, 
+                          subset = Manuscript_Identity %in% c("Club", "Goblet"))
+DimPlot(club_goblet_obj, group.by = "Manuscript_Identity", label = TRUE)
+
+```
+```{r}
+Idents(club_goblet_obj) <- "Disease_Identity"
+levels(club_goblet_obj)
+```
+```{r}
+markers_control_vs_copd <- FindMarkers(club_goblet_obj,
+                                       ident.1 = "COPD",
+                                       ident.2 = "Control",
+                                       logfc.threshold = 0.1,
+                                       min.pct = 0,
+                                       test.use = "wilcox")
+```
+```{r}
+DT::datatable(markers_control_vs_copd)
+```
+
+```{r, fig.width = 17}
+EnhancedVolcano(markers_control_vs_copd,
+                lab = rownames(markers_control_vs_copd),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                title = "COPD vs Control",
+                subtitle = "Differential expression",
+                xlab = bquote(~Log[2]~ "fold change"),
+                ylab = bquote(~-Log[10]~adjusted~italic(P)),
+                pCutoff = 0.05,
+                FCcutoff = 0.25,
+                pointSize = 2.5,
+                labSize = 3.0,
+                colAlpha = 0.75,
+                legendPosition = "right",
+                legendLabSize = 12,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5)
+```
+
+# Goblet DE Analysis
+
+```{r}
+goblet_obj <- subset(copdatlas_obj, , 
+                          subset = Manuscript_Identity %in% c("Goblet"))
+```
+
+```{r}
+Idents(goblet_obj) <- "Disease_Identity"
+levels(goblet_obj)
+```
+
+```{r}
+markers_control_vs_copd_gob <- FindMarkers(goblet_obj,
+                                       ident.1 = "COPD",
+                                       ident.2 = "Control",
+                                       logfc.threshold = 0.1,
+                                       min.pct = 0,
+                                       test.use = "wilcox")
+```
+
+```{r}
+DT::datatable(markers_control_vs_copd_gob)
+```
+# Club DE Analysis
+
+```{r}
+club_obj <- subset(copdatlas_obj, , 
+                          subset = Manuscript_Identity %in% c("Club"))
+```
+
+```{r}
+Idents(club_obj) <- "Disease_Identity"
+levels(club_obj)
+```
+
+
+```{r}
+markers_control_vs_copd_club <- FindMarkers(club_obj,
+                                       ident.1 = "COPD",
+                                       ident.2 = "Control",
+                                       logfc.threshold = 0.1,
+                                       min.pct = 0,
+                                       test.use = "wilcox")
+```
+
+```{r}
+DT::datatable(markers_control_vs_copd_club)
+```
+
+
+
+# dbEM Analysis
+
+```{r}
+dbEM_list <- readxl::read_excel("/data/jx303/hlri_summer/data/dbEM.xlsx")
+dbEM_genes <- dbEM_list$Protein
+```
+
+```{r}
+basal_obj <- subset(copdatlas_obj, , 
+                          subset = Manuscript_Identity %in% c("Basal"))
+```
+```{r}
+seurat_genes <- rownames(basal_obj)
+dbEM_genes_filtered <- intersect(dbEM_genes, seurat_genes)
+
+```
+
+```{r}
+Idents(basal_obj) <- "Disease_Identity"
+dbem_basal <- FindMarkers(basal_obj,
+                                       ident.1 = "COPD",
+                                       ident.2 = "Control", features = dbEM_genes_filtered, 
+                                       logfc.threshold = 0.1,
+                                       min.pct = 0,
+                                       test.use = "wilcox")
+```
+```{r}
+DT::datatable(dbem_basal)
+```
+
+# Dotplots
+
+```{r}
+DotPlot(goblet_obj, features = c("MUC5B"), group.by = "Disease_Identity") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+

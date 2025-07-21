@@ -1,7 +1,32 @@
 ---
 title: "COPDatlas_analysis"
-output: html_document
+author: "Joanna Xie"
+date: "`r doc_date()`"
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: "hide"
+citation_package: natbib  
+csl: ../../data/nature.csl  
 ---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  fig.width = 15,
+  fig.height = 11,
+  warning = FALSE,
+  message = FALSE,
+  verbose = FALSE,
+  root.dir = "../html")
+ 
+ 
+set.seed(1996)
+```
 
 ```{r}
 library(Seurat)
@@ -158,7 +183,7 @@ DT::datatable(dbem_basal)
 # Dotplots
 
 ```{r}
-DotPlot(goblet_obj, features = c("MUC5B"), group.by = "Disease_Identity") +
+DotPlot(goblet_obj, features = c("MUC5B", "MUC5AC", "SPDEF", "TFF"), group.by = "Disease_Identity") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 

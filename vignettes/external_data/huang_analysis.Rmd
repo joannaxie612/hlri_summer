@@ -1,0 +1,73 @@
+---
+title: "Huang Analysis"
+author: "Joanna Xie"
+date: "`r doc_date()`"
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: "hide"
+citation_package: natbib  
+csl: ../../data/nature.csl  
+---
+
+```{r}
+library(Seurat)
+library(EnhancedVolcano)
+```
+
+# Load and Plot Data
+
+```{r}
+huang_obj <- readRDS("../../data/copd_huang.Rds")
+```
+
+```{r}
+DimPlot(huang_obj)
+```
+# Club (and Goblet) DE Analysis
+
+
+```{r, fig.width = 20}
+FeaturePlot(feature = c("MUC5AC", "MUC5B", "SPDEF"), huang_obj)
+```
+
+```{r}
+huang_clubgob_obj <- subset(huang_obj, 
+                          subset = cell_type %in% c("club cells"))
+```
+
+2156 club cells
+
+```{r}
+Idents(huang_clubgob_obj) <- "copd_status"
+huang_markers_control_vs_copd <- FindMarkers(huang_clubgob_obj,
+                                       ident.1 = "copd",
+                                       ident.2 = "ctl",
+                                       logfc.threshold = 0.1,
+                                       min.pct = 0,
+                                       test.use = "wilcox")
+```
+
+```{r, fig.width = 15}
+EnhancedVolcano(huang_markers_control_vs_copd ,
+                lab = rownames(huang_markers_control_vs_copd ),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                title = "COPD vs Control",
+                subtitle = "Differential expression",
+                xlab = bquote(~Log[2]~ "fold change"),
+                ylab = bquote(~-Log[10]~adjusted~italic(P)),
+                pCutoff = 0.05,
+                FCcutoff = 0.25,
+                pointSize = 2.5,
+                labSize = 3.0,
+                colAlpha = 0.75,
+                legendPosition = "right",
+                legendLabSize = 12,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5)
+```
+

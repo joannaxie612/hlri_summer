@@ -1,7 +1,116 @@
 ---
 title: "coculture_processing"
-output: html_document
+author: "Joanna Xie"
+date: "`r doc_date()`"
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: "hide"
+citation_package: natbib  
+csl: ../../data/nature.csl  
 ---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  fig.width = 15,
+  fig.height = 11,
+  warning = FALSE,
+  message = FALSE,
+  verbose = FALSE,
+  root.dir = "../html")
+ 
+ 
+set.seed(1996)
+```
+
+
+```{r}
+library(Seurat)
+```
+
+```{r}
+myReadParseBio <- function(data.dir) {
+  mtx <- file.path(data.dir, "count_matrix.mtx")
+  cells <- file.path(data.dir, "cell_metadata.csv")
+  features <- file.path(data.dir, "all_genes.csv")
+  
+  return(ReadMtx(
+    mtx = mtx,
+    cells = cells,
+    features = features,
+    cell.column = 1,
+    feature.column = 2,
+    cell.sep = ",",
+    feature.sep = ",",
+    skip.cell = 1,
+    skip.feature = 1,
+    mtx.transpose = TRUE
+  ))
+}
+```
+
+
+
+```{r}
+# List sample files
+all_files <- list.files(
+  path = "/data/jx303/rawData/KOs_cocultures",
+  pattern = "^(AC)",
+  full.names = FALSE
+)
+
+# Filter sample names
+sample_list <- all_files[!grepl("_analysis_summary", all_files)]
+sample_names <- tools::file_path_sans_ext(sample_list)
+sample_names <- sample_names[sample_names %in% c(paste0("AC", sprintf("%02d", 1:9)), "AC15")]
+
+# Define base path
+base_path <- "/data/ac2215/unprocessedData/HBEC_KOs_all_lanes"
+
+# Define sample-level metadata
+selected_samples <- c(paste0("AC", sprintf("%02d", 1:9)), "AC15")
+genotypes <- c("Wildtype", "DKO", "QKO", "Wildtype", "DKO", 
+               "QKO", "Wildtype", "DKO", "QKO", "DKO")
+HBEC_donors <- rep("HBEC1", 10)
+fib_donors <- c("CAF", "CAF", "CAF", "COPD", "COPD", 
+                "COPD", "NA", "COPD", "NA", "NA")
+
+# Create named lookup tables
+genotype_map <- setNames(genotypes, selected_samples)
+HBEC_donor_map <- setNames(HBEC_donors, selected_samples)
+fib_donor_map <- setNames(fib_donors, selected_samples)
+
+# Build list of Seurat objects
+seurat_list <- lapply(sample_names, function(samp) {
+  message("Processing sample: ", samp)
+  
+  mat_path <- file.path(base_path, samp, "DGE_filtered")
+  mat <- myReadParseBio(mat_path)
+
+  rownames(mat)[rownames(mat) == ""] <- "unknown"
+  cell_meta <- read.csv(file.path(mat_path, "cell_metadata.csv"), row.names = 1)
+  mat <- mat[Matrix::rowSums(mat > 0) >= 10, ]
+
+  s_obj <- CreateSeuratObject(mat, min.genes = 100, min.cells = 100, 
+                              names.field = 0, meta.data = cell_meta)
+  
+  s_obj$orig.ident <- "epithelium"
+  Idents(s_obj) <- "epithelium"
+  
+  s_obj$genotype <- genotype_map[[samp]]
+  s_obj$HBEC_donor <- HBEC_donor_map[[samp]]
+  s_obj$fib_donor <- fib_donor_map[[samp]]
+  
+  return(s_obj)
+})
+
+names(seurat_list) <- sample_names
+```
 
 ```{r}
 

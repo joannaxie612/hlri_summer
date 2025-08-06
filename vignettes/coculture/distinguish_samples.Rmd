@@ -1,0 +1,430 @@
+---
+title: "distinguish_samples"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  fig.width = 15,
+  fig.height = 11,
+  warning = FALSE,
+  message = FALSE,
+  verbose = FALSE,
+  root.dir = "../html")
+ 
+ 
+set.seed(1996)
+```
+
+
+```{r}
+library(Seurat)
+library(scDblFinder)
+library(EnhancedVolcano)
+```
+
+```{r}
+myReadParseBio <- function(data.dir) {
+  mtx <- file.path(data.dir, "count_matrix.mtx")
+  cells <- file.path(data.dir, "cell_metadata.csv")
+  features <- file.path(data.dir, "all_genes.csv")
+  
+  return(ReadMtx(
+    mtx = mtx,
+    cells = cells,
+    features = features,
+    cell.column = 1,
+    feature.column = 2,
+    cell.sep = ",",
+    feature.sep = ",",
+    skip.cell = 1,
+    skip.feature = 1,
+    mtx.transpose = TRUE
+  ))
+}
+```
+
+
+
+```{r}
+# List sample files
+all_files <- list.files(
+  path = "/data/jx303/rawData/KOs_cocultures",
+  pattern = "^(AC)",
+  full.names = FALSE
+)
+
+# Filter sample names
+sample_list <- all_files[!grepl("_analysis_summary", all_files)]
+sample_names <- tools::file_path_sans_ext(sample_list)
+sample_names <- sample_names[sample_names %in% c("AC04", "AC20", "AC21")]
+
+# Define base path
+base_path <- "/data/ac2215/unprocessedData/HBEC_KOs_all_lanes"
+
+# Define sample-level metadata
+selected_samples <- c("AC04", "AC20", "AC21")
+genotypes <- c("Wildtype", "Wildtype", "Wildtype")
+
+
+# Create named lookup tables
+genotype_map <- setNames(genotypes, selected_samples)
+
+# Build list of Seurat objects
+seurat_list <- lapply(sample_names, function(samp) {
+  message("Processing sample: ", samp)
+  
+  mat_path <- file.path(base_path, samp, "DGE_filtered")
+  mat <- myReadParseBio(mat_path)
+
+  rownames(mat)[rownames(mat) == ""] <- "unknown"
+  cell_meta <- read.csv(file.path(mat_path, "cell_metadata.csv"), row.names = 1)
+  mat <- mat[Matrix::rowSums(mat > 0) >= 10, ]
+
+  s_obj <- CreateSeuratObject(mat, min.genes = 100, min.cells = 100, 
+                              names.field = 0, meta.data = cell_meta)
+  
+  s_obj$orig.ident <- "epithelium"
+  Idents(s_obj) <- "epithelium"
+  return(s_obj)
+})
+
+names(seurat_list) <- sample_names
+```
+
+
+```{r}
+seurat_list <- lapply(seurat_list, function(seuset) {
+  seuset[["percent.mt"]] <- PercentageFeatureSet(seuset, pattern = "^MT-")
+  seuset
+})
+
+
+lapply(seurat_list, function(x){
+  
+  VlnPlot(x, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+  
+})
+```
+
+```{r}
+seurat_list_filtered <- lapply(seurat_list, function(x) {
+  filtered <- tryCatch({
+    subset(x, subset = nFeature_RNA > 300 & 
+                  nCount_RNA < 50000 &
+                  percent.mt < 15)
+  }, error = function(e) {
+    message("Skipping sample: no cells passed QC")
+    return(NULL)
+  })
+  
+  filtered
+})
+
+# Remove any NULL entries
+seurat_list_filtered <- Filter(Negate(is.null), seurat_list_filtered)
+
+
+names(seurat_list_filtered) <- sample_names
+
+#check effect of filtering 
+seurat_list[[1]]
+seurat_list_filtered[[1]]
+
+```
+
+
+```{r findDoublets}
+
+seurat_list_filtered <- 
+  lapply(seurat_list_filtered, function(x){
+    
+    # Convert to SingleCellExperiment
+    sce <- as.SingleCellExperiment(x)
+    
+    # Find doublets
+    doublets <- scDblFinder(sce)
+    
+    # Add doublet information
+    x$doublet_score <- doublets$scDblFinder.score[match(colnames(x), colnames(doublets))]
+    x$doublet <- doublets$scDblFinder.class[match(colnames(x), colnames(doublets))]
+    
+    # Subset to singlets only
+    return(subset(x, subset = doublet == "singlet"))
+  })
+
+```
+
+
+
+```{r}
+
+seurat_list_filtered <- lapply(X = seurat_list_filtered, FUN = function(x) {
+  
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+
+  })
+
+### Select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = seurat_list_filtered)
+
+
+```
+
+Visualise variable features
+```{r var_features, fig.height=5, fig.width=11, message = FALSE, warning = FALSE}
+
+
+lapply(1:length(seurat_list_filtered), function(i) {
+ 
+   x <- seurat_list_filtered[[i]]
+  
+   # Identify the 10 most highly variable genes
+  top10 <- head(VariableFeatures(x), 10)
+
+  # plot variable features with and without labels
+  plot1 <- VariableFeaturePlot(x)
+  plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+  plot1 + plot2 + plot_annotation(title = names(seurat_list_filtered[i]))
+  
+})
+```
+
+```{r}
+if(file.exists("/data/jx303/hlri_summer/data/distinguish_samples_anchors.RData")){
+  
+  load(file = "/data/jx303/hlri_summer/data/distinguish_samples_anchors.RData")
+
+  }else{
+    anchors <- FindIntegrationAnchors(object.list = seurat_list_filtered, anchor.features = features)
+    
+    #This is a time consuming step, so save anchors: 
+    
+    save(anchors, file = "/data/jx303/hlri_summer/data/distinguish_samples_anchors.RData")
+
+}
+```
+
+```{r}
+if(file.exists("/data/jx303/hlri_summer/data/distinguish_samples_int.RData")){
+  
+  load(file = "/data/jx303/hlri_summer/data/distinguish_samples_int.RData")
+  
+  }else{
+    
+    libs.combined <- IntegrateData(anchorset = anchors)
+
+    save(libs.combined, file = "/data/jx303/hlri_summer/data/distinguish_samples_int.RData")
+
+}
+
+libs.combined
+```
+
+## Scale data 
+```{r}
+DefaultAssay(libs.combined) <- "integrated"
+
+libs.combined <- ScaleData(libs.combined, vars.to.regress = 'percent.mt')
+
+```
+
+## PCA 
+```{r}
+libs.combined <- RunPCA(libs.combined, npcs = 30, verbose = FALSE)
+
+```
+
+```{r elbow_plot, fig.height=6, fig.width=10}
+
+ElbowPlot(libs.combined, ndims = 25)
+
+```
+
+
+
+## UMAP 
+```{r runUMAP}
+
+libs.combined <- RunUMAP(libs.combined, reduction = "pca", dims = 1:20)
+
+p1 <- DimPlot(libs.combined, reduction = "umap", 
+              group.by = "sample",
+              pt.size = 0.5
+             ) + 
+  ggtitle("UMAP coloured by library")
+
+
+p2 <- DimPlot(libs.combined, reduction = "umap", split.by = "sample", group.by = "sample", ncol = 3, pt.size = 0.5
+              )
+
+p1 
+p2
+
+```
+
+
+## Find neighbours and Find clusters 
+
+
+```{r cluster}
+
+DefaultAssay(libs.combined) <- "integrated"
+
+
+libs.combined <- FindNeighbors(libs.combined, reduction = "pca", dims = 1:20)
+
+libs.combined <- FindClusters(libs.combined, resolution = 0.8, random.seed = 1996)
+
+head(Idents(libs.combined), 5)
+```
+
+# DE on all cells
+
+```{r}
+DimPlot(libs.combined, split.by = "sample")
+```
+
+```{r}
+Idents(libs.combined) <- "sample"
+markers4vs20 <- FindMarkers(libs.combined, ident.1 = "AC04", ident.2 = "AC20")
+markers4vs21 <- FindMarkers(libs.combined, ident.1 = "AC04", ident.2 = "AC21")
+```
+
+
+```{r}
+EnhancedVolcano(markers4vs20,
+                lab = rownames(markers4vs20),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                title = "AC04 vs AC20",
+                subtitle = "Differential expression",
+                xlab = bquote(~Log[2]~ "fold change"),
+                ylab = bquote(~-Log[10]~adjusted~italic(P)),
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.5,
+                labSize = 3.0,
+                colAlpha = 0.75,
+                legendPosition = "right",
+                legendLabSize = 12,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5)
+```
+
+```{r}
+EnhancedVolcano(markers4vs21,
+                lab = rownames(markers4vs21),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                title = "AC04 vs AC21",
+                subtitle = "Differential expression",
+                xlab = bquote(~Log[2]~ "fold change"),
+                ylab = bquote(~-Log[10]~adjusted~italic(P)),
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.5,
+                labSize = 3.0,
+                colAlpha = 0.75,
+                legendPosition = "right",
+                legendLabSize = 12,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5)
+```
+# Feature Plots
+
+```{r}
+DimPlot(libs.combined, split.by = "sample")
+FeaturePlot(libs.combined, feature = c("VIM", "FOXJ1", "KRT5", "EPCAM"))
+```
+
+# DE Analysis on Epithelial Cells Only
+
+```{r}
+epithelial_obj <- subset(libs.combined, subset = seurat_clusters != 2)
+```
+
+```{r}
+DimPlot(epithelial_obj)
+```
+
+```{r}
+Idents(libs.combined) <- "sample"
+markers4vs20_ep <- FindMarkers(epithelial_obj, ident.1 = "AC04", ident.2 = "AC20")
+markers4vs21_ep <- FindMarkers(epithelial_obj, ident.1 = "AC04", ident.2 = "AC21")
+```
+
+
+```{r, fig.width = 25}
+EnhancedVolcano(markers4vs20_ep,
+                lab = rownames(markers4vs20_ep),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                title = "AC04 vs AC20",
+                subtitle = "Differential expression",
+                xlab = bquote(~Log[2]~ "fold change"),
+                ylab = bquote(~-Log[10]~adjusted~italic(P)),
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.5,
+                labSize = 3.0,
+                colAlpha = 0.75,
+                legendPosition = "right",
+                legendLabSize = 12,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5)
+```
+
+```{r, fig.width = 25}
+EnhancedVolcano(markers4vs21_ep,
+                lab = rownames(markers4vs21_ep),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                title = "AC04 vs AC21",
+                subtitle = "Differential expression",
+                xlab = bquote(~Log[2]~ "fold change"),
+                ylab = bquote(~-Log[10]~adjusted~italic(P)),
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.5,
+                labSize = 3.0,
+                colAlpha = 0.75,
+                legendPosition = "right",
+                legendLabSize = 12,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5)
+```
+```{r}
+markers20vs21_ep <- FindMarkers(epithelial_obj, ident.1 = "AC20", ident.2 = "AC21")
+```
+
+
+```{r, fig.width = 25}
+EnhancedVolcano(markers20vs21_ep,
+                lab = rownames(markers20vs21_ep),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                title = "AC20 vs AC21",
+                subtitle = "Differential expression",
+                xlab = bquote(~Log[2]~ "fold change"),
+                ylab = bquote(~-Log[10]~adjusted~italic(P)),
+                pCutoff = 0.05,
+                FCcutoff = 0.5,
+                pointSize = 2.5,
+                labSize = 3.0,
+                colAlpha = 0.75,
+                legendPosition = "right",
+                legendLabSize = 12,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5)
+```

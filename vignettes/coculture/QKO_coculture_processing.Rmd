@@ -1,0 +1,432 @@
+---
+title: "QKO coculture processing"
+author: "Joanna Xie"
+date: "`r doc_date()`"
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: "hide"
+citation_package: natbib  
+csl: ../../data/nature.csl  
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  fig.width = 15,
+  fig.height = 11,
+  warning = FALSE,
+  message = FALSE,
+  verbose = FALSE,
+  root.dir = "../html")
+ 
+ 
+set.seed(1996)
+```
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(scDblFinder)
+library(ggplot2)
+```
+
+
+```{r}
+myReadParseBio <- function(data.dir) {
+  mtx <- file.path(data.dir, "count_matrix.mtx")
+  cells <- file.path(data.dir, "cell_metadata.csv")
+  features <- file.path(data.dir, "all_genes.csv")
+  
+  return(ReadMtx(
+    mtx = mtx,
+    cells = cells,
+    features = features,
+    cell.column = 1,
+    feature.column = 2,
+    cell.sep = ",",
+    feature.sep = ",",
+    skip.cell = 1,
+    skip.feature = 1,
+    mtx.transpose = TRUE
+  ))
+}
+```
+
+```{r}
+# List sample files
+all_files <- list.files(
+  path = "/data/jx303/rawData/KOs_cocultures",
+  pattern = "^(AC)",
+  full.names = FALSE
+)
+
+# Filter sample names
+sample_list <- all_files[!grepl("_analysis_summary", all_files)]
+sample_names <- tools::file_path_sans_ext(sample_list)
+sample_names <- sample_names[sample_names %in% c("AC03","AC06", "AC09")]
+
+# Define base path
+base_path <- "/data/ac2215/unprocessedData/HBEC_KOs_all_lanes"
+
+# Define sample-level metadata
+selected_samples <- c("AC03","AC06", "AC09")
+HBEC_donors <- c("HBEC1", "HBEC1", "HBEC1")
+fib_donors <- c("CAF", "COPD", "NA")
+
+# Create named lookup tables
+HBEC_donor_map <- setNames(HBEC_donors, selected_samples)
+fib_donor_map <- setNames(fib_donors, selected_samples)
+
+# Build list of Seurat objects
+seurat_list <- lapply(sample_names, function(samp) {
+  message("Processing sample: ", samp)
+  
+  mat_path <- file.path(base_path, samp, "DGE_filtered")
+  mat <- myReadParseBio(mat_path)
+
+  rownames(mat)[rownames(mat) == ""] <- "unknown"
+  cell_meta <- read.csv(file.path(mat_path, "cell_metadata.csv"), row.names = 1)
+  mat <- mat[Matrix::rowSums(mat > 0) >= 10, ]
+
+  s_obj <- CreateSeuratObject(mat, min.genes = 100, min.cells = 100, 
+                              names.field = 0, meta.data = cell_meta)
+  
+  s_obj$orig.ident <- samp
+  Idents(s_obj) <- "orig.ident"
+  s_obj$HBEC_donor <- HBEC_donor_map[[samp]]
+  s_obj$fib_donor <- fib_donor_map[[samp]]
+  
+  return(s_obj)
+})
+
+names(seurat_list) <- sample_names
+```
+
+
+```{r}
+seurat_list <- lapply(seurat_list, function(seuset) {
+  seuset[["percent.mt"]] <- PercentageFeatureSet(seuset, pattern = "^MT-")
+  seuset
+})
+
+
+lapply(seurat_list, function(x){
+  
+  VlnPlot(x, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+  
+})
+```
+
+```{r}
+seurat_list_filtered <- lapply(seurat_list, function(x) {
+  filtered <- tryCatch({
+    subset(x, subset = nFeature_RNA > 300 & 
+                  nFeature_RNA < 10000 &
+                  nCount_RNA < 50000 &
+                  percent.mt < 25)
+  }, error = function(e) {
+    message("Skipping sample: no cells passed QC")
+    return(NULL)
+  })
+  
+  filtered
+})
+
+# Remove any NULL entries
+seurat_list_filtered <- Filter(Negate(is.null), seurat_list_filtered)
+
+
+names(seurat_list_filtered) <- sample_names
+
+#check effect of filtering 
+seurat_list[[1]]
+seurat_list_filtered[[1]]
+```
+
+```{r findDoublets}
+
+seurat_list_filtered <- 
+  lapply(seurat_list_filtered, function(x){
+    
+    # Convert to SingleCellExperiment
+    sce <- as.SingleCellExperiment(x)
+    
+    # Find doublets
+    doublets <- scDblFinder(sce)
+    
+    # Add doublet information
+    x$doublet_score <- doublets$scDblFinder.score[match(colnames(x), colnames(doublets))]
+    x$doublet <- doublets$scDblFinder.class[match(colnames(x), colnames(doublets))]
+    
+    # Subset to singlets only
+    return(subset(x, subset = doublet == "singlet"))
+  })
+
+```
+
+```{r}
+
+seurat_list_filtered <- lapply(X = seurat_list_filtered, FUN = function(x) {
+  
+  x <- NormalizeData(x)
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+
+  })
+
+### Select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = seurat_list_filtered)
+
+
+```
+
+```{r var_features, fig.height=5, fig.width=11, message = FALSE, warning = FALSE}
+
+
+lapply(1:length(seurat_list_filtered), function(i) {
+ 
+   x <- seurat_list_filtered[[i]]
+  
+   # Identify the 10 most highly variable genes
+  top10 <- head(VariableFeatures(x), 10)
+
+  # plot variable features with and without labels
+  plot1 <- VariableFeaturePlot(x)
+  plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+  plot1 + plot2 + patchwork::plot_annotation(title = names(seurat_list_filtered[i]))
+  
+})
+```
+
+```{r}
+if(file.exists("/data/jx303/hlri_summer/data/QKO_coculture_anchors.RData")){
+  
+  load(file = "/data/jx303/hlri_summer/data/QKO_coculture_anchors.RData")
+
+  }else{
+    anchors <- FindIntegrationAnchors(object.list = seurat_list_filtered, anchor.features = features)
+    
+    #This is a time consuming step, so save anchors: 
+    
+    save(anchors, file = "/data/jx303/hlri_summer/data/QKO_coculture_anchors.RData")
+
+}
+```
+
+```{r}
+if(file.exists("/data/jx303/hlri_summer/data/QKO_coculture_int.RData")){
+  
+  load(file = "/data/jx303/hlri_summer/data/QKO_coculture_int.RData")
+  
+  }else{
+    
+    libs.combined <- IntegrateData(anchorset = anchors)
+
+    save(libs.combined, file = "/data/jx303/hlri_summer/data/QKO_coculture_int.RData")
+
+}
+```
+
+## Scale data 
+```{r}
+DefaultAssay(libs.combined) <- "integrated"
+
+libs.combined <- ScaleData(libs.combined, vars.to.regress = 'percent.mt')
+
+```
+
+## PCA 
+```{r}
+libs.combined <- RunPCA(libs.combined, npcs = 30, verbose = FALSE)
+```
+
+```{r elbow_plot, fig.height=6, fig.width=10}
+
+ElbowPlot(libs.combined, ndims = 30)
+
+```
+
+## UMAP 
+```{r runUMAP}
+
+libs.combined <- RunUMAP(libs.combined, reduction = "pca", dims = 1:20)
+
+p1 <- DimPlot(libs.combined, reduction = "umap", 
+              group.by = "sample",
+              pt.size = 0.5
+             ) + 
+  ggtitle("UMAP coloured by library")
+
+
+p2 <- DimPlot(libs.combined, reduction = "umap", split.by = "orig.ident", pt.size = 0.5
+              )
+
+p1 
+p2
+
+```
+
+
+## Find neighbours and Find clusters 
+
+
+```{r cluster}
+
+DefaultAssay(libs.combined) <- "integrated"
+
+
+libs.combined <- FindNeighbors(libs.combined, reduction = "pca", dims = 1:20)
+
+libs.combined <- FindClusters(libs.combined, resolution = 0.6, random.seed = 1996)
+
+head(Idents(libs.combined), 5)
+
+DimPlot(libs.combined)
+```
+
+
+```{r}
+list_of_celltypes <- c("Basal", "proliferatingBasal", "BC_Club", "Club", "Ciliated", "Neuroendocine", "Tuft", "Ionocyte", "Goblet", "Fibroblast")
+
+list_of_cellmarkers <- list(Basal = c("KRT5","KRT14","TP63","DAPL1", "NGFR"),
+                          proliferatingBasal = c("MKI67","TOP2A","CDK1"),
+                          BC_Club = c("KRT4","KRT13"),
+                          Club = c("SCGB1A1","KRT15","LYPD2"),
+                          Ciliated =c("FOXJ1","CCDC153","CCDC113","MLF1","LZTFL1"),
+                          Neuroendocine = c("CHGA",
+                                            #"ASCL1",
+                                            "SOX9","ITGA2","ITGB4"), 
+                          Tuft = c("AVIL"
+                                   ,"GNAT3","TRPM5"
+                                   ),
+                          Ionocyte = c("FOXI1", 
+                            "CFTR"
+                            , "ASCL3"
+                            ),
+                          Goblet = c("MUC5AC", "MUC5B", 
+                                     #"GP2",
+                                     "SPDEF"), Fibroblasts = c("VIM", "COL1A1", "COL3A1", "ACTA2"))
+
+marker_groups <- list(
+  Basal = c("TP63", "KRT5", "KRT14"),
+  
+  `Proliferating Basal` = c("MKI67", "TOP2A", "BIRC5"),
+  
+  Suprabasal = c("KRT4", "KRT13", "KRT6A"),
+  
+  Secretory = c("SCGB1A1", "SCGB3A1","MUC5B"),
+  
+  Goblet = c("MUC5AC", "SPDEF", "TFF3"),
+  
+  Ciliated = c("FOXJ1", "TPPP3","DNAI1", "DNAH5"),
+  
+  Deuterosomal = c( "DEUP1", "CDC20B", "PLK4"),
+  
+  Rare = c("FOXI1", "CFTR" ,     # Ionocytes
+           "POU2F3", "AVIL", "TRPM5",   # Tuft
+           "ASCL1", "CHGA" # Neuroendocrine
+           )  
+  , Fibroblasts = c("VIM", "COL1A1", "COL3A1", "ACTA2"),
+  Other = c(  "KRT16", "KRT17", "SERPINB3", "KRT6B", "KRT7", "CST6")
+)
+```
+
+```{r}
+DimPlot(libs.combined)
+```
+
+
+```{r}
+
+DefaultAssay(libs.combined) <- "RNA"
+
+for (cell_type in names(list_of_cellmarkers)) {
+  markers <- list_of_cellmarkers[[cell_type]]
+  
+  p <- VlnPlot(
+    object = libs.combined,
+    features = markers,
+    pt.size = 0,
+    ncol = 2
+  )
+
+  p <- p + patchwork::plot_annotation(title = paste("Biomarker Violin Plots:", cell_type, sep = " ")) 
+  print(p)
+}
+```
+
+```{r}
+QKO_coculture_anno <- RenameIdents(libs.combined, 
+                              "0" = "Secretory", 
+                              "1" = "Ciliated", 
+                              "2" = "Suprabasal",
+                              "3" = "Proliferating Basal",  
+                              "4" = "Ciliated", 
+                              "5" = "Secretory", 
+                              "6" = "Basal" , 
+                              "7" = "Secretory", 
+                              "8" = "Basal",
+                              "9" = "Ciliated",  
+                              "10" = "Suprabasal", 
+                              "11" = "Basal",
+                              "12" = "Ciliated", 
+                              "13" = "Fibroblasts",
+                              "14" = "Secretory",
+                              "15" = "Rare"
+                              ) 
+
+QKO_coculture_anno$cellType <- Idents(QKO_coculture_anno)
+Idents(QKO_coculture_anno) <- "cellType"
+```
+
+```{r, fig.width = 8, fig.height = 6}
+DimPlot(QKO_coculture_anno)
+```
+```{r}
+for (cell_type in names(list_of_cellmarkers)) {
+  markers <- list_of_cellmarkers[[cell_type]]
+
+  p <- VlnPlot(
+    object = QKO_coculture_anno,
+    features = markers,
+    pt.size = 0
+  )
+
+  p <- p + patchwork::plot_annotation(title = paste("<b>Title</b>", cell_type, sep = " "))  
+
+  print(p)
+}
+```
+
+
+```{r}
+saveRDS(QKO_coculture_anno, file = "/data/jx303/hlri_summer/data/QKO_coculture_annotated.Rds")
+```
+
+
+
+```{r, fig.width = 25}
+p <- DotPlot(QKO_coculture_anno, features = list_of_cellmarkers) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5), plot.title = element_text(size = 8), strip.text = element_text(size = 6, angle = 90)) +
+  labs(title = "Lung Epithelial Marker Expression by Functional Cell Type") + 
+  scale_color_gradientn(
+    colors = c("#F0F0F0", "#BDD7E7", "#6BAED6", "#2171B5"),  # very light grey to dark blue
+    values = scales::rescale(c(0, 0.01, 1, 2)),  # force 0 to light grey, then gradient
+    limits = c(0, NA),  # scale starts at 0
+    oob = scales::squish
+  )
+
+print(p)
+```
+
+```{r}
+DimPlot(QKO_coculture_anno, split.by = "orig.ident", ncol = 2)
+DimPlot(QKO_coculture_anno, group.by = "orig.ident")
+```
+
+

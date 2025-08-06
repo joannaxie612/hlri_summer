@@ -13,7 +13,6 @@ citation_package: natbib
 csl: ../data/nature.csl  
 ---
 
-
 ```{r Libraries, echo=FALSE}
 
 library(dplyr)

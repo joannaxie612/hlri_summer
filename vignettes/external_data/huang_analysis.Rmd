@@ -12,6 +12,11 @@ citation_package: natbib
 csl: ../../data/nature.csl  
 ---
 
+https://respiratory-research.biomedcentral.com/articles/10.1186/s12931-022-02293-2
+
+Huang, Q. et al. Single-cell transcriptomics highlights immunological dysregulations of monocytes in the pathobiology of COPD. Respiratory Research 23, 367 (2022).
+
+
 ```{r}
 library(Seurat)
 library(EnhancedVolcano)
@@ -26,10 +31,11 @@ huang_obj <- readRDS("../../data/copd_huang.Rds")
 ```{r}
 DimPlot(huang_obj)
 ```
+
 # Club (and Goblet) DE Analysis
 
 
-```{r, fig.width = 20}
+```{r, fig.width = 18, fig.height = 15}
 FeaturePlot(feature = c("MUC5AC", "MUC5B", "SPDEF"), huang_obj)
 ```
 
@@ -50,7 +56,9 @@ huang_markers_control_vs_copd <- FindMarkers(huang_clubgob_obj,
                                        test.use = "wilcox")
 ```
 
-```{r, fig.width = 15}
+## Volcano Plot
+
+```{r, fig.width = 18}
 EnhancedVolcano(huang_markers_control_vs_copd ,
                 lab = rownames(huang_markers_control_vs_copd ),
                 x = "avg_log2FC",

@@ -31,6 +31,8 @@ set.seed(1996)
 
 ```{r}
 library(Seurat)
+library(ggplot2)
+library(dplyr)
 ```
 
 ```{r}
@@ -113,6 +115,17 @@ names(seurat_list) <- sample_names
 ```
 
 ```{r}
+if(file.exists("/data/jx303/hlri_summer/data/anchors_KO_cocult.RData")){
+  
+  load(file = "/data/jx303/hlri_summer/data/anchors_KO_cocult.RData")
 
+  }else{
+    anchors <- FindIntegrationAnchors(object.list = seurat_list_filtered, anchor.features = features)
+    
+    #This is a time consuming step, so save anchors: 
+    
+    save(anchors, file = "/data/jx303/hlri_summer/data/anchors_KO_cocult.RData")
+
+}
 ```
 

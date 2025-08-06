@@ -1,0 +1,123 @@
+---
+title: "COPD coculture processing"
+author: "Joanna Xie"
+date: "`r doc_date()`"
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: "hide"
+citation_package: natbib  
+csl: ../../data/nature.csl  
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  fig.width = 15,
+  fig.height = 11,
+  warning = FALSE,
+  message = FALSE,
+  verbose = FALSE,
+  root.dir = "../html")
+ 
+ 
+set.seed(1996)
+```
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(EnhancedVolcano)
+```
+
+```{r}
+copd_coculture_obj <- readRDS("../../data/copd_coculture_anno.Rds")
+```
+
+```{r}
+DimPlot(copd_coculture_obj)
+DimPlot(copd_coculture_obj, split.by = "fib_donor")
+DimPlot(copd_coculture_obj, split.by = "HBEC_donor")
+DimPlot(copd_coculture_obj, split.by = "orig.ident")
+```
+
+```{r}
+COPD1_obj <- subset(copd_coculture_obj, subset = HBEC_donor == "COPD1")
+HBEC1_obj <- subset(copd_coculture_obj, subset = HBEC_donor == "HBEC1")
+
+COPD1_obj <- subset(COPD1_obj, subset = cellType != "Fibroblast")
+HBEC1_obj <- subset(HBEC1_obj, subset = cellType != "Fibroblast")
+```
+
+```{r}
+DimPlot(COPD1_obj, split.by = "fib_donor")
+DimPlot(HBEC1_obj, split.by = "fib_donor")
+```
+```{r}
+FeaturePlot(COPD1_obj, split.by = "fib_donor", feature= "percent.mt")
+FeaturePlot(HBEC1_obj, split.by = "fib_donor", feature= "percent.mt")
+```
+
+```{r}
+Idents(COPD1_obj) <- "fib_donor"
+COPD1_coculture_markers <- FindMarkers(COPD1_obj, ident.1 = "COPD", ident.2 = "NA", min.pct = 0, logfc.threshold = 0.05)
+```
+
+```{r}
+Idents(HBEC1_obj) <- "fib_donor"
+HBEC1_coculture_markers <- FindMarkers(HBEC1_obj, ident.1 = "COPD", ident.2 = "NA", min.pct = 0, logfc.threshold = 0.05)
+```
+```{r}
+DT::datatable(COPD1_coculture_markers)
+DT::datatable(HBEC1_coculture_markers)
+```
+
+
+```{r, fig.width = 30}
+EnhancedVolcano(COPD1_coculture_markers,
+                lab = rownames(COPD1_coculture_markers),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                title = "",
+                subtitle = "Differential expression",
+                xlab = bquote(~Log[2]~ "fold change"),
+                ylab = bquote(~-Log[10]~adjusted~italic(P)),
+                pCutoff = 0.05,
+                FCcutoff = 2,
+                pointSize = 2.5,
+                labSize = 3.0,
+                colAlpha = 0.75,
+                legendPosition = "right",
+                legendLabSize = 12,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5)
+```
+
+```{r, fig.width = 35}
+EnhancedVolcano(HBEC1_coculture_markers,
+                lab = rownames(HBEC1_coculture_markers),
+                x = "avg_log2FC",
+                y = "p_val_adj",
+                title = "",
+                subtitle = "Differential expression",
+                xlab = bquote(~Log[2]~ "fold change"),
+                ylab = bquote(~-Log[10]~adjusted~italic(P)),
+                pCutoff = 0.05,
+                FCcutoff = 2,
+                pointSize = 2.5,
+                labSize = 3.0,
+                colAlpha = 0.75,
+                legendPosition = "right",
+                legendLabSize = 12,
+                legendIconSize = 4.0,
+                drawConnectors = TRUE,
+                widthConnectors = 0.5)
+```
+

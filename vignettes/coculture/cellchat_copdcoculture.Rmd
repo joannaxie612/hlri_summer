@@ -1,0 +1,79 @@
+---
+title: "cell_chat_copdcoculture"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(CellChat)
+library(future)
+```
+
+```{r}
+copd_coculture_anno <- readRDS("/data/jx303/hlri_summer/data/copd_coculture_anno.Rds")
+DimPlot(copd_coculture_anno)
+```
+
+
+```{r}
+copd_coculture_cc <- createCellChat(copd_coculture_anno, group.by = "cellType")
+```
+
+```{r}
+CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+showDatabaseCategory(CellChatDB)
+```
+
+```{r}
+dplyr::glimpse(CellChatDB$interaction)
+```
+```{r}
+CellChatDB.use <- CellChatDB
+copd_coculture_cc@DB <- CellChatDB.use
+```
+
+```{r}
+copd_coculture_cc <- subsetData(copd_coculture_cc)
+```
+
+```{r}
+copd_coculture_cc <- identifyOverExpressedGenes(copd_coculture_cc)
+copd_coculture_cc <- identifyOverExpressedInteractions(copd_coculture_cc)
+```
+
+```{r}
+copd_coculture_cc <- computeCommunProb(copd_coculture_cc)
+copd_coculture_cc <- filterCommunication(copd_coculture_cc, min.cells = 10)
+```
+
+```{r}
+copd_coculture_cc <- computeCommunProbPathway
+copd_coculture_cc <- aggregateNet(copd_coculture_cc)
+```
+
+```{r}
+groupSize <- as.numeric(table(copd_coculture_cc@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(copd_coculture_cc@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(copd_coculture_cc@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+```
+
+
+```{r, fig.width = 16}
+mat <- copd_coculture_cc@net$weight
+par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i])
+}
+```
+```{r, fig.width = 10}
+pathways.show <- c("CXCL") 
+#par(mfrow=c(1,1))
+netVisual_aggregate(copd_coculture_cc, signaling = pathways.show, layout = "chord")
+```
+
+
+
+

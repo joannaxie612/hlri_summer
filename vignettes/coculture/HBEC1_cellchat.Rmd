@@ -1,0 +1,144 @@
+---
+title: "HBEC1_cellchat"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(CellChat)
+library(future)
+```
+
+
+```{r}
+HBEC1WT_coculture_annotated <- readRDS("/data/jx303/hlri_summer/data/HBEC1WT_coculture_annotated.Rds")
+```
+
+
+```{r}
+DimPlot(HBEC1WT_coculture_annotated)
+DimPlot(HBEC1WT_coculture_annotated, split.by = "orig.ident")
+DimPlot(HBEC1WT_coculture_annotated, split.by = "fib_donor")
+```
+```{r}
+HBEC1_CAF <- subset(HBEC1WT_coculture_annotated, subset = fib_donor == "CAF")
+HBEC1_COPD <- subset(HBEC1WT_coculture_annotated, subset = fib_donor == "COPD")
+HBEC1_NA  <- subset(HBEC1WT_coculture_annotated, subset = fib_donor == "NA")
+
+
+run_cellchat <- function(seurat_obj, group_by = "cell_type") {
+  data.input <- GetAssayData(seurat_obj, assay = "RNA", slot = "data")
+  meta <- seurat_obj@meta.data
+  
+  cellchat <- createCellChat(object = data.input, meta = meta, group.by = "cellType")
+  cellchat@DB <- CellChatDB.human
+  
+  cellchat <- subsetData(cellchat)
+  cellchat <- identifyOverExpressedGenes(cellchat)
+  cellchat <- identifyOverExpressedInteractions(cellchat)
+  cellchat <- computeCommunProb(cellchat)
+  cellchat <- filterCommunication(cellchat, min.cells = 10)
+  cellchat <- computeCommunProbPathway(cellchat)
+  cellchat <- aggregateNet(cellchat)
+  
+  return(cellchat)
+}
+
+cellchat_CAF <- run_cellchat(HBEC1_CAF)
+cellchat_COPD <- run_cellchat(HBEC1_COPD)
+cellchat_NA <- run_cellchat(HBEC1_NA)
+```
+
+```{r}
+cellchat_CAF <- updateCellChat(cellchat_CAF)
+cellchat_COPD <- updateCellChat(cellchat_COPD)
+cellchat_NA  <- updateCellChat(cellchat_NA)
+```
+
+```{r}
+object.list <- list(CAF = cellchat_CAF, COPD = cellchat_COPD, None = cellchat_NA)
+combined_cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+combined_cellchat
+```
+
+```{r}
+compareInteractions(combined_cellchat)
+compareInteractions(combined_cellchat, measure = "weight")
+```
+
+
+
+```{r, fig.height = 10}
+netVisual_diffInteraction(combined_cellchat, comparison = c("CAF", "COPD"))
+```
+
+```{r}
+# Heatmap of overall interaction strength by cell group
+netVisual_heatmap(combined_cellchat, comparison = c(0,1))
+
+```
+```{r, fig.height = 10}
+rankNet(combined_cellchat, mode = "comparison", comparison = c(1, 2))
+rankNet(combined_cellchat, mode = "comparison", comparison = c(1,3))
+rankNet(combined_cellchat, mode = "comparison", comparison = c(2,3))
+```
+
+
+```{r, fig.height = 16}
+# Bubble plot for signaling increased in dataset 2 compared to dataset 1
+gg1 <- netVisual_bubble(combined_cellchat, 
+                       sources.use = 4, 
+                       targets.use = 5:11,  
+                       comparison = c(1, 2), 
+                       max.dataset = 2, 
+                       title.name = "Increased signaling in Dataset 2", 
+                       angle.x = 45, 
+                       remove.isolate = TRUE, 
+                       thresh = 1)
+
+# Bubble plot for signaling decreased in dataset 2 compared to dataset 1
+gg2 <- netVisual_bubble(combined_cellchat, 
+                       sources.use = 4, 
+                       targets.use = 5:11, 
+                       comparison = c(1, 2), 
+                       max.dataset = 1, 
+                       title.name = "Decreased signaling in Dataset 2", 
+                       angle.x = 45, 
+                       remove.isolate = TRUE,
+                       thresh = 1)
+
+# Combine plots
+library(patchwork)
+gg1 + gg2
+
+```
+
+
+```{r, fig.height = 10}
+p <- plotGeneExpression(combined_cellchat, signaling = "EGF", split.by = "datasets", colors.ggplot = TRUE)
+p + theme(legend.position = "right")  # or "bottom" etc.
+
+```
+
+```{r, fig.height = 20}
+library(ComplexHeatmap)
+library(grid)
+object.list[[1]] <- netAnalysis_computeCentrality(object.list[[1]], slot.name = "netP")
+object.list[[2]] <- netAnalysis_computeCentrality(object.list[[2]], slot.name = "netP")
+
+
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[1]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[1], width = 5, height = 6, color.heatmap = "GnBu")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[2]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[2], width = 5, height = 6, color.heatmap = "GnBu")
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+
+```
+
+```{r, fig.height  = 25}
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[1]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[1], width = 5, height =20, color.heatmap = "GnBu")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[2]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[2], width = 5, height = 20, color.heatmap = "GnBu")
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+
+```
+
+

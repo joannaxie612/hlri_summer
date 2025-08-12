@@ -1,0 +1,424 @@
+---
+title: "COPD coculture processing"
+author: "Joanna Xie"
+date: "`r doc_date()`"
+output:
+  BiocStyle::html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: "hide"
+citation_package: natbib  
+csl: ../../data/nature.csl  
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  fig.width = 15,
+  fig.height = 11,
+  warning = FALSE,
+  message = FALSE,
+  verbose = FALSE,
+  root.dir = "../html")
+ 
+ 
+set.seed(1996)
+```
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(EnhancedVolcano)
+library(msigdbr)
+library("org.Hs.eg.db")
+library("clusterProfiler")
+library(org.Hs.eg.db)
+library(tibble)
+library(knitr)
+library(enrichplot)
+```
+
+```{r}
+copd_coculture_obj <- readRDS("../../data/copd_coculture_anno.Rds")
+```
+
+```{r}
+DimPlot(copd_coculture_obj)
+DimPlot(copd_coculture_obj, split.by = "fib_donor")
+DimPlot(copd_coculture_obj, split.by = "HBEC_donor")
+DimPlot(copd_coculture_obj, split.by = "orig.ident")
+```
+
+```{r}
+COPD1_obj <- subset(copd_coculture_obj, subset = HBEC_donor == "COPD1")
+HBEC1_obj <- subset(copd_coculture_obj, subset = HBEC_donor == "HBEC1")
+
+COPD1_obj <- subset(COPD1_obj, subset = cellType != "Fibroblasts")
+HBEC1_obj <- subset(HBEC1_obj, subset = cellType != "Fibroblasts")
+```
+
+```{r}
+DimPlot(COPD1_obj, split.by = "fib_donor")
+DimPlot(HBEC1_obj, split.by = "fib_donor")
+```
+```{r}
+DimPlot(COPD1_obj, split.by = "orig.ident")
+DimPlot(HBEC1_obj, split.by = "orig.ident")
+```
+
+```{r}
+FeaturePlot(COPD1_obj, split.by = "fib_donor", feature= "percent.mt")
+FeaturePlot(HBEC1_obj, split.by = "fib_donor", feature= "percent.mt")
+```
+
+
+```{r}
+HBEC1_obj_sec <- subset(HBEC1_obj, subset = cellType == "Secretory")
+Idents(HBEC1_obj_sec) <- "fib_donor"
+HBEC1_coculture_markers_sec<- FindMarkers(HBEC1_obj_sec, ident.1 = "COPD", ident.2 = "NA", min.pct = 0, logfc.threshold = 0.05)
+DT::datatable(HBEC1_coculture_markers_sec)
+```
+
+
+
+```{r}
+collections <- c("H")  # Hallmark
+
+run_gsea_analysis <- function(seurat_obj, object_name, output_base_dir, comparison) {
+  celltype_sets <- list(
+    BasalGroup = c("Basal", "Proliferating Basal", "Suprabasal"),
+    Secretory = "Secretory",
+    Ciliated = "Ciliated"
+  )
+  
+  # Load MSigDB hallmark gene sets
+  pathway_sets_list <- lapply(collections, function(cat) {
+    msigdbr(species = "Homo sapiens", category = cat) %>%
+      dplyr::select(gs_name, ENTREZID = entrez_gene)
+  })
+  names(pathway_sets_list) <- collections
+
+  gsea_results_celltypes <- list()
+  gene_tables_celltypes <- list()
+  de_results_celltypes <- list()
+  
+  for (cell_label in names(celltype_sets)) {
+    celltypes <- celltype_sets[[cell_label]]
+    
+    # Subset object by cell type
+    subset_obj <- subset(seurat_obj, subset = cellType %in% celltypes)
+    Idents(subset_obj) <- "fib_donor"
+    
+    if (!all(c(comparison, "NA") %in% levels(subset_obj))) next
+    
+    # DE analysis
+    de_res <- FindMarkers(
+      subset_obj,
+      ident.1 = comparison, ident.2 = "NA",
+      logfc.threshold = 0,
+      min.pct = 0.1
+    )
+    
+    if (nrow(de_res) == 0) next
+    
+    de_res <- de_res %>%
+      rownames_to_column("SYMBOL") %>%
+      filter(!is.na(avg_log2FC))
+    
+    de_results_celltypes[[cell_label]] <- de_res
+    
+    gene_entrez <- bitr(de_res$SYMBOL,
+                        fromType = "SYMBOL",
+                        toType = "ENTREZID",
+                        OrgDb = org.Hs.eg.db)
+    
+    gene_entrez_combined <- left_join(gene_entrez, de_res, by = "SYMBOL") %>%
+      distinct(ENTREZID, .keep_all = TRUE) %>%
+      filter(!is.na(avg_log2FC))
+    
+    gene_tables_celltypes[[cell_label]] <- gene_entrez_combined
+    
+    gene_ranks <- gene_entrez_combined$avg_log2FC
+    names(gene_ranks) <- gene_entrez_combined$ENTREZID
+    gene_ranks <- sort(gene_ranks, decreasing = TRUE)
+    
+    gsea_results_celltypes[[cell_label]] <- list()
+    
+    for (col in collections) {
+      gsea_res <- GSEA(
+        geneList = gene_ranks,
+        TERM2GENE = pathway_sets_list[[col]],
+        minGSSize = 10,
+        maxGSSize = 500,
+        pAdjustMethod = "BH",
+        verbose = FALSE
+      )
+      
+      gsea_results_celltypes[[cell_label]][[col]] <- gsea_res
+      
+      # Optional: HTML output
+      plot_title <- paste("GSEA:", object_name, cell_label, comparison," vs NA -", col)
+      if (nrow(as.data.frame(gsea_res)) > 0) {
+        cat(sprintf("<details><summary><strong>%s</strong></summary>\n\n", plot_title))
+        print(dotplot(gsea_res, showCategory = 20, title = plot_title) +
+                theme(axis.text.y = element_text(size = 6)))
+        cat("</details>\n\n")
+        
+        gsea_df <- as.data.frame(gsea_res)
+        for (term in gsea_df$ID) {
+          gene_ids <- gsea_res@geneSets[[term]]
+          term_genes <- gene_entrez_combined %>%
+            filter(ENTREZID %in% gene_ids) %>%
+            select(SYMBOL, ENTREZID, avg_log2FC, p_val_adj) %>%
+            arrange(desc(avg_log2FC))
+          
+          if (nrow(term_genes) > 0) {
+            cat(sprintf("<details><summary><em>%s | %s</em></summary>\n\n", cell_label, term))
+            knitr::kable(term_genes, format = "html", digits = 3) %>%
+              print()
+            cat("\n</details>\n\n")
+          }
+        }
+      }
+    }
+  }
+  
+  # Save results
+  output_dir <- file.path(output_base_dir, object_name)
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  saveRDS(de_results_celltypes, file = file.path(output_dir, "de_results_celltypes.rds"))
+  saveRDS(gsea_results_celltypes, file = file.path(output_dir, "gsea_results_celltypes.rds"))
+  saveRDS(gene_tables_celltypes, file = file.path(output_dir, "gene_tables_celltypes.rds"))
+}
+```
+
+```{r}
+run_gsea_analysis(HBEC1_obj, "HBEC1", "/data/jx303/hlri_summer/data/copd_coculture_GSEA")
+run_gsea_analysis(COPD1_obj, "COPD1", "/data/jx303/hlri_summer/data/copd_coculture_GSEA")
+```
+
+```{r}
+run_gsea_analysis2 <- function(seurat_obj, object_name, output_base_dir) {
+  celltype_sets <- list(
+    BasalGroup = c("Basal", "Proliferating Basal", "Suprabasal"),
+    Secretory = "Secretory",
+    Ciliated = "Ciliated"
+  )
+  
+  # Load MSigDB hallmark gene sets
+  pathway_sets_list <- lapply(collections, function(cat) {
+    msigdbr(species = "Homo sapiens", category = cat) %>%
+      dplyr::select(gs_name, ENTREZID = entrez_gene)
+  })
+  names(pathway_sets_list) <- collections
+
+  gsea_results_celltypes <- list()
+  gene_tables_celltypes <- list()
+  de_results_celltypes <- list()
+  
+  for (cell_label in names(celltype_sets)) {
+    celltypes <- celltype_sets[[cell_label]]
+    
+    # Subset object by cell type
+    subset_obj <- subset(seurat_obj, subset = cellType %in% celltypes)
+    Idents(subset_obj) <- "fib_donor"
+    
+    # Ensure both CAF and COPD are present
+    if (!all(c("CAF", "COPD") %in% levels(subset_obj))) next
+    
+    # DE analysis
+    de_res <- FindMarkers(
+      subset_obj,
+      ident.1 = "CAF",
+      ident.2 = "COPD",
+      logfc.threshold = 0,
+      min.pct = 0.1
+    )
+    
+    if (nrow(de_res) == 0) next
+    
+    de_res <- de_res %>%
+      rownames_to_column("SYMBOL") %>%
+      filter(!is.na(avg_log2FC))
+    
+    de_results_celltypes[[cell_label]] <- de_res
+    
+    # Convert SYMBOL to ENTREZ ID
+    gene_entrez <- bitr(
+      de_res$SYMBOL,
+      fromType = "SYMBOL",
+      toType = "ENTREZID",
+      OrgDb = org.Hs.eg.db
+    )
+    
+    gene_entrez_combined <- left_join(gene_entrez, de_res, by = "SYMBOL") %>%
+      distinct(ENTREZID, .keep_all = TRUE) %>%
+      filter(!is.na(avg_log2FC))
+    
+    gene_tables_celltypes[[cell_label]] <- gene_entrez_combined
+    
+    # Rank genes for GSEA
+    gene_ranks <- gene_entrez_combined$avg_log2FC
+    names(gene_ranks) <- gene_entrez_combined$ENTREZID
+    gene_ranks <- sort(gene_ranks, decreasing = TRUE)
+    
+    gsea_results_celltypes[[cell_label]] <- list()
+    
+    for (col in collections) {
+      gsea_res <- GSEA(
+        geneList = gene_ranks,
+        TERM2GENE = pathway_sets_list[[col]],
+        minGSSize = 10,
+        maxGSSize = 500,
+        pAdjustMethod = "BH",
+        verbose = FALSE
+      )
+      
+      gsea_results_celltypes[[cell_label]][[col]] <- gsea_res
+      
+      # Optional: HTML output
+      plot_title <- paste("GSEA:", object_name, cell_label, "CAF vs COPD -", col)
+      if (nrow(as.data.frame(gsea_res)) > 0) {
+        cat(sprintf("<details><summary><strong>%s</strong></summary>\n\n", plot_title))
+        print(dotplot(gsea_res, showCategory = 20, title = plot_title) +
+                theme(axis.text.y = element_text(size = 6)))
+        cat("</details>\n\n")
+        
+        gsea_df <- as.data.frame(gsea_res)
+        for (term in gsea_df$ID) {
+          gene_ids <- gsea_res@geneSets[[term]]
+          term_genes <- gene_entrez_combined %>%
+            filter(ENTREZID %in% gene_ids) %>%
+            select(SYMBOL, ENTREZID, avg_log2FC, p_val_adj) %>%
+            arrange(desc(avg_log2FC))
+          
+          if (nrow(term_genes) > 0) {
+            cat(sprintf("<details><summary><em>%s | %s</em></summary>\n\n", cell_label, term))
+            knitr::kable(term_genes, format = "html", digits = 3) %>%
+              print()
+            cat("\n</details>\n\n")
+          }
+        }
+      }
+    }
+  }
+  
+  # Save results
+  output_dir <- file.path(output_base_dir, object_name)
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+  
+  saveRDS(de_results_celltypes, file = file.path(output_dir, "de_results_celltypes.rds"))
+  saveRDS(gsea_results_celltypes, file = file.path(output_dir, "gsea_results_celltypes.rds"))
+  saveRDS(gene_tables_celltypes, file = file.path(output_dir, "gene_tables_celltypes.rds"))
+}
+```
+
+```{r}
+run_gsea_analysis2(HBEC1WT_coculture_obj, "CAFvsCOPD", "/data/jx303/hlri_summer/data/HBEC1WT_GSEA")
+run_gsea_analysis2(DKO_coculture_obj, "CAFvsCOPD", "/data/jx303/hlri_summer/data/DKO_GSEA")
+run_gsea_analysis2(QKO_coculture_obj, "CAFvsCOPD", "/data/jx303/hlri_summer/data/QKO_GSEA")
+```
+
+
+```{r}
+DKO_coculture_obj <- readRDS("/data/jx303/hlri_summer/data/DKO_coculture_annotated.Rds")
+```
+
+
+```{r}
+DimPlot(DKO_coculture_obj)
+FeaturePlot(DKO_coculture_obj, feature = c(  "VIM", "FN1", "CDH2", "SNAI1", "SNAI2"), split.by = "orig.ident")
+FeaturePlot(DKO_coculture_obj, feature = c(  "VIM", "FN1", "CDH2", "SNAI1", "SNAI2"), split.by = "fib_donor")
+```
+
+```{r}
+Idents(DKO_coculture_obj) <- "cellType"
+subset_obj <- subset(
+  DKO_coculture_obj,
+  idents = c("Basal")
+)
+```
+
+```{r}
+# Set the cell identity to your comparison variable
+Idents(subset_obj) <- "fib_donor"  # replace with your metadata col
+
+# Run DE
+de_results <- FindMarkers(
+  subset_obj,
+  ident.1 = "CAF",  # group 1
+  ident.2 = "NA",    # group 2 (replace if different)
+  min.pct = 0,
+  test.use = "wilcox"
+)
+
+# Add gene column
+de_results <- de_results %>% tibble::rownames_to_column("gene")
+```
+
+```{r}
+library(msigdbr)
+library(clusterProfiler)
+
+# Get Hallmark gene sets for human
+hallmark_sets <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  dplyr::select(gs_name, gene_symbol)
+
+# Create ranked list for GSEA
+gene_ranks <- de_results %>%
+  arrange(desc(avg_log2FC)) %>%
+  dplyr::select(gene, avg_log2FC)
+
+# Named numeric vector
+ranked_vector <- gene_ranks$avg_log2FC
+names(ranked_vector) <- gene_ranks$gene
+
+```
+
+```{r}
+gsea_results <- GSEA(
+  ranked_vector,
+  TERM2GENE = hallmark_sets,
+  pvalueCutoff = 0.05
+)
+
+```
+
+```{r}
+# Table of results
+gsea_df <- as.data.frame(gsea_results)
+head(gsea_df, 20)
+
+# Dotplot of enrichment
+library(enrichplot)
+dotplot(gsea_results, showCategory = 20)
+
+```
+
+```{r, fig.height = 50}
+FeaturePlot(DKO_coculture_obj, feature = c(
+  "PTHLH", "ABI3BP", "MATN2", "SPOCK1", "CALU", "TFPI2", "DST", "CCN1", "GEM",
+  "CDH11", "MYL9", "FBLN2", "COL7A1", "CXCL1", "TGFBR3", "FSTL1", "MXRA5"
+), split.by = "orig.ident")
+```
+```{r}
+DT::datatable(de_results)
+```
+
+
+```{r}
+gsea_results@result$core_enrichment  # gene symbols separated by "/"
+
+```
+
+
+```{r}
+```
+
+

@@ -1,0 +1,293 @@
+---
+title: "HBEC_DE_GSEA_knit"
+output: 
+  html_document:
+    toc: true              # Enable table of contents
+    toc_depth: 3           # How many heading levels to include (e.g., ##, ###)
+    toc_float: true        # Floating TOC sidebar (can scroll with page)
+    number_sections: true  # Number section headers (optional)
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  tidy = TRUE,
+  tidy.opts = list(width.cutoff = 95),
+  fig.width = 15,
+  fig.height = 11,
+  warning = FALSE,
+  message = FALSE,
+  verbose = FALSE,
+  root.dir = "../html")
+  echo = FALSE
+  results = 'asis'
+ 
+set.seed(1996)
+```
+
+
+```{r gsea_output, results='asis', echo=FALSE}
+# Load necessary libraries
+library(dplyr)
+library(knitr)
+library(DT)
+library(EnhancedVolcano)
+library(enrichplot)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+render_gsea_report <- function(object_name, base_output_dir) {
+  output_dir <- file.path(base_output_dir, object_name)
+  
+  # Load .rds results
+  de_results_celltypes <- readRDS(file.path(output_dir, "de_results_celltypes.rds"))
+  gene_tables_celltypes <- readRDS(file.path(output_dir, "gene_tables_celltypes.rds"))
+  gsea_results_celltypes <- readRDS(file.path(output_dir, "gsea_results_celltypes.rds"))
+  
+  # Prepare gene symbols for DE results
+  for (cell_type in names(de_results_celltypes)) {
+    de_df <- de_results_celltypes[[cell_type]]
+    
+    if (!"SYMBOL" %in% colnames(de_df)) {
+      gene_symbols <- bitr(rownames(de_df),
+                           fromType = "ENTREZID",
+                           toType = "SYMBOL",
+                           OrgDb = org.Hs.eg.db)
+      de_df <- dplyr::left_join(tibble::rownames_to_column(de_df, "ENTREZID"),
+                                gene_symbols, by = "ENTREZID")
+      rownames(de_df) <- de_df$SYMBOL
+    } else {
+      rownames(de_df) <- de_df$SYMBOL
+    }
+    
+    de_results_celltypes[[cell_type]] <- de_df
+    assign(paste0("de_df_", gsub(" ", "_", cell_type)), de_df, envir = .GlobalEnv)
+  }
+  
+  # Volcano plots
+  for (cell_type in names(de_results_celltypes)) {
+    de_df <- de_results_celltypes[[cell_type]]
+    cat(sprintf("<details><summary><strong>Volcano Plot: %s</strong></summary>\n\n", cell_type))
+    print(
+      EnhancedVolcano(de_df,
+                      lab = rownames(de_df),
+                      x = 'avg_log2FC',
+                      y = 'p_val_adj',
+                      title = paste("Volcano:", cell_type),
+                      pCutoff = 0.05,
+                      FCcutoff = 0.25,
+                      pointSize = 1.5,
+                      labSize = 3.0)
+    )
+    cat("</details>\n\n")
+  }
+  
+  # GSEA plots and tables
+  for (cell_type in names(gsea_results_celltypes)) {
+    for (collection in names(gsea_results_celltypes[[cell_type]])) {
+      gsea_obj <- gsea_results_celltypes[[cell_type]][[collection]]
+      gsea_df <- as.data.frame(gsea_obj)
+      
+      if (nrow(gsea_df) > 0) {
+        
+        ## Positive NES
+        pos_terms <- gsea_df %>% filter(NES > 0)
+        if (nrow(pos_terms) > 0) {
+          pos_gsea <- gsea_obj
+          pos_gsea@result <- pos_terms
+          pos_gsea@result$ID <- factor(pos_gsea@result$ID, levels = rev(pos_gsea@result$ID))
+          cat(sprintf("<details><summary><strong>GSEA Dotplot: %s - %s (NES > 0)</strong></summary>\n\n", cell_type, collection))
+          print(dotplot(pos_gsea, showCategory = 20, title = paste(cell_type, "-", collection, "Positive NES")) +
+                  theme(axis.text.y = element_text(size = 6)))
+          cat("</details>\n\n")
+        }
+        
+        ## Negative NES
+        neg_terms <- gsea_df %>% filter(NES < 0)
+        if (nrow(neg_terms) > 0) {
+          neg_gsea <- gsea_obj
+          neg_gsea@result <- neg_terms
+          neg_gsea@result$ID <- factor(neg_gsea@result$ID, levels = rev(neg_gsea@result$ID))
+          cat(sprintf("<details><summary><strong>GSEA Dotplot: %s - %s (NES < 0)</strong></summary>\n\n", cell_type, collection))
+          print(dotplot(neg_gsea, showCategory = 20, title = paste(cell_type, "-", collection, "Negative NES")) +
+                  theme(axis.text.y = element_text(size = 6)))
+          cat("</details>\n\n")
+        }
+        
+        ## Custom NES Plot
+        plot_df <- gsea_df %>%
+          arrange(desc(abs(NES))) %>%
+          mutate(ID = factor(ID, levels = ID),
+                 log10padj = -log10(p.adjust))
+        cat(sprintf("<details><summary><strong>Custom NES Plot: %s - %s</strong></summary>\n\n", cell_type, collection))
+        print(
+          ggplot(plot_df, aes(x = NES, y = log10padj, label = ID)) +
+            geom_point(aes(color = NES > 0), size = 2) +
+            scale_color_manual(values = c("red", "blue"), labels = c("NES < 0", "NES > 0")) +
+            geom_text_repel(data = head(plot_df, 10), size = 3, max.overlaps = 20) +
+            labs(
+              title = paste("NES vs -log10(adj. p-value):", cell_type, "|", collection),
+              x = "Normalized Enrichment Score (NES)",
+              y = "-log10(Adjusted p-value)",
+              color = "Direction"
+            ) +
+            theme_minimal()
+        )
+        cat("</details>\n\n")
+        
+        ## GSEA Table
+        cat(sprintf("<details><summary><strong>GSEA Table: %s | %s</strong></summary>\n\n", cell_type, collection))
+        knitr::kable(head(gsea_df[, c("ID", "NES", "p.adjust")], 10), format = "html", digits = 3) %>% print()
+        cat("</details>\n\n")
+        
+        ## Top pathways gene tables
+        for (term in head(gsea_df$ID, 3)) {
+          gene_ids <- gsea_obj@geneSets[[term]]
+          term_genes <- gene_tables_celltypes[[cell_type]] %>%
+            filter(ENTREZID %in% gene_ids) %>%
+            dplyr::select(SYMBOL, ENTREZID, avg_log2FC, p_val_adj) %>%
+            arrange(desc(avg_log2FC))
+          
+          if (nrow(term_genes) > 0) {
+            cat(sprintf("<details><summary><em>%s | %s | Genes</em></summary>\n\n", cell_type, term))
+            knitr::kable(term_genes, format = "html", digits = 3) %>% print()
+            cat("</details>\n\n")
+          }
+        }
+      }
+    }
+  }
+}
+
+```
+
+# COPD vs NA
+
+```{r r1, results='asis', echo=FALSE}
+render_gsea_report(
+  object_name = "COPDvsNA",
+  base_output_dir = "/data/jx303/hlri_summer/data/HBEC1WT_GSEA"
+)
+```
+
+## Interactive DE Table: Basal
+
+```{r}
+de_results_celltypes <- readRDS(file.path("/data/jx303/hlri_summer/data/HBEC1WT_GSEA","COPDvsNA", "de_results_celltypes.rds"))
+
+DT::datatable(
+  de_results_celltypes[["BasalGroup"]],
+  options = list(pageLength = 10),
+  rownames = FALSE
+)
+```
+
+## Interactive DE Table: Secretory
+
+```{r}
+DT::datatable(
+  de_results_celltypes[["Secretory"]],
+  options = list(pageLength = 10),
+  rownames = FALSE
+)
+```
+
+
+## Interactive DE Table: Ciliated
+
+```{r}
+
+DT::datatable(
+  de_results_celltypes[["Ciliated"]],
+  options = list(pageLength = 10),
+  rownames = FALSE
+)
+```
+
+# CAF vs NA
+
+```{r results='asis', echo=FALSE}
+render_gsea_report(
+  object_name = "CAFvsNA",
+  base_output_dir = "/data/jx303/hlri_summer/data/HBEC1WT_GSEA"
+)
+```
+
+
+## Interactive DE Table: Basal
+
+```{r}
+
+de_results_celltypes <- readRDS(file.path("/data/jx303/hlri_summer/data/HBEC1WT_GSEA","CAFvsNA", "de_results_celltypes.rds"))
+
+DT::datatable(
+  de_results_celltypes[["BasalGroup"]],
+  options = list(pageLength = 10),
+  rownames = FALSE
+)
+```
+
+
+## Interactive DE Table: Secretory
+
+```{r}
+DT::datatable(
+  de_results_celltypes[["Secretory"]],
+  options = list(pageLength = 10),
+  rownames = FALSE
+)
+```
+
+## Interactive DE Table: Ciliated
+
+```{r}
+
+DT::datatable(
+  de_results_celltypes[["Ciliated"]],
+  options = list(pageLength = 10),
+  rownames = FALSE
+)
+```
+
+# CAF vs COPD
+ 
+```{r results='asis', echo=FALSE}
+render_gsea_report(
+  object_name = "CAFvsCOPD",
+  base_output_dir = "/data/jx303/hlri_summer/data/HBEC1WT_GSEA"
+)
+```
+
+## Interactive DE Table: Basal
+
+```{r}
+
+de_results_celltypes <- readRDS(file.path("/data/jx303/hlri_summer/data/HBEC1WT_GSEA","CAFvsCOPD", "de_results_celltypes.rds"))
+
+DT::datatable(
+  de_results_celltypes[["BasalGroup"]],
+  options = list(pageLength = 10),
+  rownames = FALSE
+)
+```
+
+## Interactive DE Table: Secretory
+
+```{r}
+DT::datatable(
+  de_results_celltypes[["Secretory"]],
+  options = list(pageLength = 10),
+  rownames = FALSE
+)
+```
+
+## Interactive DE Table: Ciliated
+
+```{r}
+
+DT::datatable(
+  de_results_celltypes[["Ciliated"]],
+  options = list(pageLength = 10),
+  rownames = FALSE
+)
+```

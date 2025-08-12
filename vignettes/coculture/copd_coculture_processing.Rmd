@@ -244,7 +244,7 @@ lapply(1:length(seurat_list_filtered), function(i) {
   # plot variable features with and without labels
   plot1 <- VariableFeaturePlot(x)
   plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
-  plot1 + plot2 + plot_annotation(title = names(seurat_list_filtered[i]))
+  plot1 + plot2 + patchwork::plot_annotation(title = names(seurat_list_filtered[i]))
   
 })
 ```
@@ -282,7 +282,8 @@ if(file.exists("/data/jx303/hlri_summer/data/copd_coculture_int.RData")){
 ```{r}
 DefaultAssay(libs.combined) <- "integrated"
 
-libs.combined <- ScaleData(libs.combined, vars.to.regress = 'percent.mt')
+libs.combined$orig.ident <- as.factor(libs.combined$orig.ident)
+libs.combined <- ScaleData(libs.combined, vars.to.regress = c('percent.mt', "orig.ident"))
 
 ```
 
@@ -317,10 +318,6 @@ p1
 p2
 
 ```
-```{r}
-#saveRDS(libs.combined, file = "/data/jx303/hlri_summer/data/copd_coculture_unclustered.Rds")
-```
-
 
 ## Find neighbours and Find clusters 
 
@@ -332,7 +329,7 @@ DefaultAssay(libs.combined) <- "integrated"
 
 libs.combined <- FindNeighbors(libs.combined, reduction = "pca", dims = 1:20)
 
-libs.combined <- FindClusters(libs.combined, resolution = 0.6, random.seed = 1996)
+libs.combined <- FindClusters(libs.combined, resolution = 0.4, random.seed = 1996)
 
 head(Idents(libs.combined), 5)
 
@@ -401,37 +398,39 @@ for (cell_type in names(list_of_cellmarkers)) {
     ncol = 2
   )
 
-  p <- p + plot_annotation(title = paste("Biomarker Violin Plots:", cell_type, sep = " ")) 
+  p <- p + patchwork::plot_annotation(title = paste("Biomarker Violin Plots:", cell_type, sep = " ")) 
   print(p)
 }
 ```
 
 ```{r}
 copd_coculture_anno <- RenameIdents(libs.combined, 
-                              "0" = "Ciliated", 
-                              "1" = "Secretory", 
-                              "2" = "Basal",
+                              "0" = "Secretory", 
+                              "1" = "Ciliated", 
+                              "2" = "Ciliated",
                               "3" = "Secretory", # 
-                              "4" = "Secretory", #
-                              "5" = "Suprabasal", 
-                              "6" = "Ciliated" , 
+                              "4" = "Suprabasal", #
+                              "5" = "Basal", 
+                              "6" = "Fibroblasts" , 
                               "7" = "Secretory", 
-                              "8" = "Fibroblast",
-                              "9" = "Ciliated",  
-                              "10" = "Secretory", #
-                              "11" = "Suprabasal",
-                              "12" = "Proliferating Basal", 
-                              "13" = "Deuterosomal",
-                              "14" = "Rare",
-                              "15" = "Ciliated"
+                              "8" = "Secretory",
+                              "9" = "Secretory",  
+                              "10" = "Proliferating Basal", #
+                              "11" = "Deuterosomal",
+                              "12" = "Basal", 
+                              "13" = "Rare",
+                              "14" = "Rare"
                               ) 
 
 copd_coculture_anno$cellType <- Idents(copd_coculture_anno)
 Idents(copd_coculture_anno) <- "cellType"
 ```
 
-```{r}
+```{r, fig.width=8, fig.height=6}
 DimPlot(copd_coculture_anno)
+```
+```{r}
+saveRDS(copd_coculture_anno, file = "/data/jx303/hlri_summer/data/copd_coculture_anno.Rds")
 ```
 
 
@@ -452,8 +451,5 @@ print(p)
 ```{r}
 DimPlot(copd_coculture_anno, split.by = "orig.ident", ncol = 2)
 DimPlot(copd_coculture_anno, group.by = "orig.ident")
-```
-```{r}
-saveRDS(copd_coculture_anno, file = "/data/jx303/hlri_summer/data/copd_coculture_anno.Rds")
 ```
 
